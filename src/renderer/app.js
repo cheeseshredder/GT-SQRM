@@ -787,11 +787,25 @@ function initEventListeners() {
   if (bgVidTrimOn) bgVidTrimOn.addEventListener("change", (e) => {
     const row = $("bg-vid-trim-row");
     if (row) row.style.display = e.target.checked ? "block" : "none";
-    if (e.target.checked && S.bgVid) applyBgVidTrim();
+    resetBgVidCrossfadeState();
+    if (S.bgVid) applyBgVidTrim();
+    updateBgVidInfo();
   });
   ["bg-vid-trim-start","bg-vid-trim-end"].forEach(id => {
     const el = $(id);
-    if (el) el.addEventListener("input", () => { if (ge("bg-vid-trim-on")) applyBgVidTrim(); });
+    if (el) el.addEventListener("input", () => {
+      if (ge("bg-vid-trim-on")) {
+        resetBgVidCrossfadeState();
+        applyBgVidTrim();
+      }
+      updateBgVidInfo();
+    });
+  });
+  const bgVidSmartLoopOn = $("bg-vid-smart-loop-on");
+  if (bgVidSmartLoopOn) bgVidSmartLoopOn.addEventListener("change", () => {
+    resetBgVidCrossfadeState();
+    if (S.bgVid) applyBgVidTrim();
+    updateBgVidInfo();
   });
   const bgAudioTrimOn = $("bg-audio-trim-on");
   if (bgAudioTrimOn) bgAudioTrimOn.addEventListener("change", (e) => {
@@ -900,7 +914,17 @@ function initEventListeners() {
     }
   });
   const bgLoopMode = $("bg-loop-mode");
-  if (bgLoopMode) bgLoopMode.addEventListener("change", resetBgVidCrossfadeState);
+  if (bgLoopMode) bgLoopMode.addEventListener("change", () => {
+    resetBgVidCrossfadeState();
+    if (S.bgVid) applyBgVidTrim();
+    updateBgVidInfo();
+  });
+  const bgCrossfade = $("bg-crossfade-ms");
+  if (bgCrossfade) bgCrossfade.addEventListener("input", () => {
+    resetBgVidCrossfadeState();
+    if (S.bgVid) applyBgVidTrim();
+    updateBgVidInfo();
+  });
 
   // Color picker + text sync
   const syncPairs = [
@@ -2803,12 +2827,47 @@ function stopRecitationAudio() {
 
 // ── تقطيع نطاق زمني للوسائط المحلية ───────────────────
 //   يطبَّق في المعاينة وفي تصدير V2 (المكتبية) عبر ffmpeg -ss/-to
-function getBgVidTrim() {
-  if (!ge("bg-vid-trim-on") || !S.bgVid) return null;
+function getBgVidManualTrim(vid = S.bgVid) {
+  if (!ge("bg-vid-trim-on") || !vid) return null;
   const s = Math.max(0, parseFloat(gv("bg-vid-trim-start")) || 0);
   const e = Math.max(s + 0.1, parseFloat(gv("bg-vid-trim-end")) || s + 1);
-  const dur = S.bgVid.duration;
+  const dur = vid.duration;
   return { start: s, end: isFinite(dur) ? Math.min(e, dur) : e };
+}
+
+function getBgVidSmartTrim(vid = S.bgVid) {
+  if (!ge("bg-vid-smart-loop-on") || ge("bg-vid-trim-on") || !vid) return null;
+  if (!S.bgVidItems || S.bgVidItems.length !== 1) return null;
+  const dur = vid.duration;
+  if (!isFinite(dur) || dur < 2.5) return null;
+  const minSegment = Math.max(1.5, getCrossfadeDur() * 2.4);
+  let edge = Math.min(0.75, Math.max(0.25, dur * 0.10));
+  if (dur - edge * 2 < minSegment) edge = Math.max(0, (dur - minSegment) / 2);
+  if (edge < 0.08) return null;
+  return { start: edge, end: dur - edge, smart: true };
+}
+
+function getBgVidTrim(vid = S.bgVid) {
+  return getBgVidManualTrim(vid) || getBgVidSmartTrim(vid);
+}
+
+function updateBgVidInfo() {
+  const el = $("bg-vid-info");
+  if (!el) return;
+  if (!S.bgVid || !isFinite(S.bgVid.duration)) {
+    el.textContent = "";
+    return;
+  }
+  const dur = S.bgVid.duration;
+  const trim = getBgVidTrim();
+  const fmt = n => `${n.toFixed(2)}ث`;
+  if (trim?.smart) {
+    el.textContent = `🪄 قص ذكي للحلقة: ${fmt(trim.start)} → ${fmt(trim.end)} من أصل ${fmt(dur)}`;
+  } else if (trim) {
+    el.textContent = `✂️ تقطيع يدوي: ${fmt(trim.start)} → ${fmt(trim.end)} من أصل ${fmt(dur)}`;
+  } else {
+    el.textContent = `مدة المقطع: ${fmt(dur)}`;
+  }
 }
 
 function getBgAudioTrim() {
@@ -2964,9 +3023,11 @@ function addBgVidItemFromSource(file, url, name, shouldRevokeUrl = true) {
       $("bg-vid-preview").src = url;
       $("bg-vid-thumb").style.display = "block";
       // الفيديو يبقى متوقفاً عند الرفع — يُشغَّل فقط مع ضغط ▶️
-      try { vid.pause(); vid.currentTime = 0; } catch (_) {}
+      try { vid.pause(); vid.currentTime = getBgVidLoopBounds(vid).start; } catch (_) {}
+      applyBgVidTrim();
     }
     renderBgVidList();
+    updateBgVidInfo();
     if (S.bgVidItems.length === 1) {
       toast("🎥 تم رفع المقطع — يمكن إضافة المزيد لتتابع الخلفيات", "success", 3500);
     } else {
@@ -3036,7 +3097,7 @@ function shouldUseSingleBgCrossfade() {
   return getBgLoopMode() === "crossfade" && getCrossfadeDur() > 0 && S.bgVidItems.length === 1;
 }
 function getBgVidLoopBounds(vid = S.bgVid) {
-  const trim = (typeof getBgVidTrim === "function") ? getBgVidTrim() : null;
+  const trim = (typeof getBgVidTrim === "function") ? getBgVidTrim(vid) : null;
   const dur = vid && isFinite(vid.duration) ? vid.duration : 0;
   const start = trim ? trim.start : 0;
   const end = trim ? trim.end : dur;
@@ -3168,6 +3229,7 @@ function removeBgVidItem(idx) {
     S.bgVid = null; S.bgVidFile = null;
     const thumb = $("bg-vid-thumb"); if (thumb) thumb.style.display = "none";
     const prev = $("bg-vid-preview"); if (prev) prev.src = "";
+    updateBgVidInfo();
   } else {
     activateBgVidByIndex(0, true);
   }
@@ -3206,10 +3268,12 @@ function activateBgVidByIndex(idx, resetTime = true) {
   // ابدأ من الصفر أو خذ في الاعتبار التقطيع
   if (resetTime) {
     try {
-      const t = getBgVidTrim();
+      const t = getBgVidTrim(item.vid);
       item.vid.currentTime = t ? t.start : 0;
     } catch (_) {}
   }
+  applyBgVidTrim();
+  updateBgVidInfo();
   // إن كان المشغّل قيد التشغيل، شغّل المقطع الجديد فوراً
   if (S.playing) { try { item.vid.play().catch(() => {}); } catch (_) {} }
 }

@@ -315,7 +315,15 @@ async function startDesktopExportV2(opts) {
   const bgVidAudioItems = (typeof S !== "undefined" && Array.isArray(S.bgVidItems))
     ? S.bgVidItems
         .filter(it => it.audioEnabled && it.audioBuffer)
-        .map(it => ({ buffer: it.audioBuffer, gain: it.audioGain, dur: it.dur }))
+        .map((it, idx, arr) => {
+          const useTrim = arr.length === 1 && bgVidTrim && bgVidTrim.end > bgVidTrim.start;
+          const buffer = useTrim ? sliceAudioBuffer(it.audioBuffer, bgVidTrim.start, bgVidTrim.end) : it.audioBuffer;
+          return {
+            buffer,
+            gain: it.audioGain,
+            dur: useTrim ? Math.max(0.1, bgVidTrim.end - bgVidTrim.start) : it.dur,
+          };
+        })
     : [];
   const mixed = await mixAudioToBuffer({
     audioBuffers, ayaStarts,
