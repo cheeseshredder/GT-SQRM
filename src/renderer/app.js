@@ -28,6 +28,63 @@ function buildAudioUrl(folder, surahNum, ayaNum) {
   return `${AUDIO_BASE}/${cleanFolder}/${String(surahNum).padStart(3,"0")}${String(ayaNum).padStart(3,"0")}.mp3`;
 }
 
+const BISMILLAH_TEXT = "بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ";
+const BISMILLAH_FALLBACK_DUR = 2.5;
+
+function isBismillahSegment(aya) {
+  return !!aya && aya.type === "bismillah";
+}
+
+function makeBismillahSegment() {
+  return {
+    type: "bismillah",
+    text: BISMILLAH_TEXT,
+    label: "البسملة"
+  };
+}
+
+function shouldInsertBismillah(surahNum) {
+  return !!ge("bismillah-intro") && surahNum !== 9;
+}
+
+function buildSegmentAudioUrl(aya, reciter, surahNum) {
+  if (isBismillahSegment(aya)) return buildAudioUrl(reciter.folder, 1, 1);
+  return buildAudioUrl(reciter.folder, surahNum, aya.numberInSurah);
+}
+
+function getSegmentLabel(aya) {
+  return isBismillahSegment(aya) ? "البسملة" : `الآية ${aya?.numberInSurah || ""}`.trim();
+}
+
+function hasBismillahIntroSegment() {
+  return isBismillahSegment(S.verses[0]);
+}
+
+function getAyahOrdinal(i) {
+  return hasBismillahIntroSegment() && i > 0 ? i : i + 1;
+}
+
+function getAyahTotal() {
+  return Math.max(0, S.verses.length - (hasBismillahIntroSegment() ? 1 : 0));
+}
+
+function getSegmentFallbackDur(i, manualDur = parseFloat(gv("aya-dur")) || 6) {
+  return isBismillahSegment(S.verses[i]) ? BISMILLAH_FALLBACK_DUR : manualDur;
+}
+
+function getSegmentAudioDur(i, manualDur = parseFloat(gv("aya-dur")) || 6) {
+  const audioDur = S.ayaDurations[i];
+  return (audioDur && audioDur > 0.5) ? audioDur : getSegmentFallbackDur(i, manualDur);
+}
+
+function getSegmentGap(i) {
+  return isBismillahSegment(S.verses[i]) ? 0 : getAyaGap();
+}
+
+function getSequenceDuration() {
+  return S.verses.reduce((sum, _aya, i) => sum + getSegmentAudioDur(i) + getSegmentGap(i), 0);
+}
+
 const BUILT_IN_FONTS = [
   { id: "amiri",     name: "Amiri Quran",     css: "'Amiri Quran'",       sample: "بِسْمِ اللَّهِ" },
 { id: "reem",      name: "Reem Kufi",        css: "'Reem Kufi'",         sample: "بِسْمِ اللَّهِ" },
@@ -175,6 +232,12 @@ function initEventListeners() {
   // Buttons
   const loadVersesBtn = $("load-verses-btn");
   if (loadVersesBtn) loadVersesBtn.addEventListener("click", loadVerses);
+
+  const bismillahIntro = $("bismillah-intro");
+  if (bismillahIntro) bismillahIntro.addEventListener("change", () => {
+    if (S.playing) pausePlayer();
+    if (S.verses.length) loadVerses();
+  });
 
   const toggleAddReciterBtn = $("toggle-add-reciter-btn");
   if (toggleAddReciterBtn) toggleAddReciterBtn.addEventListener("click", toggleAddReciter);
@@ -557,8 +620,7 @@ function getAyaGap() {
 }
 // مدة فعلية لكل "خانة" آية = مدة الصوت + الفاصل
 function getEffectiveDur(i) {
-  const audioDur = (S.ayaDurations[i] && S.ayaDurations[i] > 0.5) ? S.ayaDurations[i] : (parseFloat(gv("aya-dur")) || 6);
-  return audioDur + getAyaGap();
+  return getSegmentAudioDur(i) + getSegmentGap(i);
 }
 
 function checkAyaAdvance() {
@@ -1407,6 +1469,7 @@ function drawSurahName(ctx, W, H) {
 
 function drawVerse(ctx, W, H, ts) {
   const aya = S.verses[S.currentAya]; if (!aya) return;
+  const isBismillah = isBismillahSegment(aya);
   const font = fontVal();
   const txtCol = $("txt-col").value;
   const shdCol = $("shd-col").value;
@@ -1417,7 +1480,7 @@ function drawVerse(ctx, W, H, ts) {
   let animType = radioVal("tanim");
   // في وضع "مختلط": اختر التأثير الفعلي للآية الحالية بترتيب الاختيار
   if (animType === "mix") animType = getMixedAnimForCurrentAya();
-  const dur = S.ayaDurations[S.currentAya] || 6;
+  const dur = getSegmentAudioDur(S.currentAya);
 
   // ── حساب alpha + transform حسب نوع الـ animation ──
   let alpha = 1;
@@ -1514,7 +1577,7 @@ function drawVerse(ctx, W, H, ts) {
 
   const lines = wrapText(ctx, aya.text, W * .85, fsz, font);
   const lineH = fsz * lh, totalH = lines.length * lineH;
-  const hasT = S.translations[S.currentAya];
+  const hasT = isBismillah ? null : S.translations[S.currentAya];
   let startY;
   if (tpos === "top") startY = H * .1 + fsz;
   else if (tpos === "bottom") startY = H * .82 - totalH + fsz;
@@ -1542,7 +1605,8 @@ function drawVerse(ctx, W, H, ts) {
   ctx.shadowColor = "transparent"; ctx.shadowBlur = 0;
   ctx.font = `bold ${W * .022}px 'Cairo'`;
   ctx.fillStyle = $("orn-col").value;
-  ctx.fillText(`❴ ${aya.numberInSurah} ❵`, W / 2, startY + totalH + (hasT ? 0 : W * .04));
+  const marker = isBismillah ? "البسملة" : `❴ ${aya.numberInSurah} ❵`;
+  ctx.fillText(marker, W / 2, startY + totalH + (hasT ? 0 : W * .04));
 
   ctx.restore();
 }
@@ -2064,13 +2128,14 @@ async function playRecitationAudio() {
   const myGen = ++_recGen;
   const surahNum = parseInt($("surah-sel").value) || 1;
   const reciter = S.reciters.find(r => r.id === radioVal("reciter")) || S.reciters[0];
-  const url = buildAudioUrl(reciter.folder, surahNum, aya.numberInSurah);
-  $("audio-status").textContent = `⏳ جاري التحميل — ${reciter.name} الآية ${aya.numberInSurah}`;
+  const label = getSegmentLabel(aya);
+  const url = buildSegmentAudioUrl(aya, reciter, surahNum);
+  $("audio-status").textContent = `⏳ جاري التحميل — ${reciter.name} ${label}`;
 
   const onEnded = () => {
     if (!S.playing || myGen !== _recGen) return;
     // الانتظار حسب فاصل الصمت قبل الانتقال للآية التالية
-    const gap = getAyaGap();
+    const gap = getSegmentGap(S.currentAya);
     const advance = () => {
       if (!S.playing || myGen !== _recGen) return;
       if (S.currentAya < S.verses.length - 1) {
@@ -2114,7 +2179,7 @@ async function playRecitationAudio() {
     S.recAudioSource = source;
     S.recGainNode    = gainNode;    // يُستخدم للكتم فقط
     S.recExportGain  = exportGain; // لا يُلمس بالكتم
-    $("audio-status").textContent = `▶️ ${reciter.name} — الآية ${aya.numberInSurah}`;
+    $("audio-status").textContent = `▶️ ${reciter.name} — ${label}`;
   } catch (err) {
     if (myGen !== _recGen) return;
     console.warn("AudioBuffer fetch failed, using HTMLAudioElement:", err.message);
@@ -2122,18 +2187,20 @@ async function playRecitationAudio() {
     a.crossOrigin = null;
     a.volume = gv("rec-vol") / 100;
     a.onloadedmetadata = () => {
-      if (myGen === _recGen) S.ayaDurations[S.currentAya] = a.duration || 6;
+      if (myGen === _recGen) S.ayaDurations[S.currentAya] = a.duration || getSegmentFallbackDur(S.currentAya);
     };
       a.onended = onEnded;
       a.onerror = () => {
         if (myGen !== _recGen) return;
-        S.ayaDurations[S.currentAya] = parseFloat(gv("aya-dur")) || 6;
-        $("audio-status").textContent = `❌ فشل التحميل — ${reciter.name} الآية ${aya.numberInSurah}`;
+        S.ayaDurations[S.currentAya] = getSegmentFallbackDur(S.currentAya);
+        $("audio-status").textContent = isBismillahSegment(aya)
+          ? `⚠️ تعذر تحميل البسملة — نص فقط`
+          : `❌ فشل التحميل — ${reciter.name} ${label}`;
       };
       a.src = url;
       a.play().catch(() => {});
       S.recAudioEl = a;
-      $("audio-status").textContent = `▶️ ${reciter.name} — الآية ${aya.numberInSurah}`;
+      $("audio-status").textContent = `▶️ ${reciter.name} — ${label}`;
   }
 }
 
@@ -2702,10 +2769,10 @@ function nextAya() { if (S.currentAya < S.verses.length - 1) { S.currentAya++; S
 
 function seekClick(e) {
   const bar = $("pbar"), ratio = e.offsetX / bar.offsetWidth;
-  const total = S.verses.length * (S.ayaDurations[0] || 6);
+  const total = getSequenceDuration() || 1;
   let acc = 0;
   for (let i = 0; i < S.verses.length; i++) {
-    const d = S.ayaDurations[i] || 6;
+    const d = getEffectiveDur(i);
     if (acc + d >= ratio * total) { S.currentAya = i; S.elapsed = (ratio * total - acc); break; }
     acc += d;
   }
@@ -2714,15 +2781,22 @@ function seekClick(e) {
 }
 
 function updateProgressUI() {
-  const totalDur = S.verses.length * (S.ayaDurations[0] || 6) || 1;
-  const passed = S.ayaDurations.slice(0, S.currentAya).reduce((a, b) => a + b, 0) + S.elapsed;
+  const totalDur = getSequenceDuration() || 1;
+  let passed = 0;
+  for (let i = 0; i < S.currentAya; i++) passed += getEffectiveDur(i);
+  passed += S.elapsed;
   const pct = Math.min(100, (passed / totalDur) * 100);
   $("pfill").style.width = pct + "%";
   $("ptime").textContent = `${fmt(passed)} / ${fmt(totalDur)}`;
 }
 
 function updateAyaUI() {
-  $("aya-ind").textContent = `الآية ${S.currentAya + 1}/${S.verses.length}`;
+  const aya = S.verses[S.currentAya];
+  if (isBismillahSegment(aya)) {
+    $("aya-ind").textContent = "البسملة";
+    return;
+  }
+  $("aya-ind").textContent = `الآية ${getAyahOrdinal(S.currentAya)}/${getAyahTotal() || S.verses.length}`;
 }
 function fmt(s) { const m = Math.floor(s / 60); return `${m}:${String(Math.floor(s % 60)).padStart(2, "0")}`; }
 
@@ -2778,7 +2852,7 @@ async function startExport(type) {
 
   const ctx = await resumeAudioCtx();
   const manualDur = parseFloat(gv("aya-dur")) || 6;
-  const getDur = (i) => (S.ayaDurations[i] && S.ayaDurations[i] > 0.5) ? S.ayaDurations[i] : manualDur;
+  const getDur = (i) => getSegmentAudioDur(i, manualDur);
 
   const surahNum = parseInt($("surah-sel").value) || 1;
   const reciter = S.reciters.find(r => r.id === radioVal("reciter")) || S.reciters[0];
@@ -2786,7 +2860,7 @@ async function startExport(type) {
   let loaded = 0;
 
   const audioBuffers = await Promise.all(S.verses.map(async (aya, i) => {
-    const url = buildAudioUrl(reciter.folder, surahNum, aya.numberInSurah);
+    const url = buildSegmentAudioUrl(aya, reciter, surahNum);
     try {
       const res = await fetch(url, { cache: "force-cache" });
       if (!res.ok) throw new Error("HTTP " + res.status);
@@ -2839,12 +2913,11 @@ async function startExport(type) {
   audioBuffers.forEach((buf, i) => { if (buf) S.ayaDurations[i] = buf.duration; });
 
   // فاصل الصمت يُضاف بعد كل آية (يدخل في ayaStarts التراكمية)
-  const ayaGap = getAyaGap();
   const ayaStarts = [];
   let acc = 0;
   for (let i = 0; i < S.verses.length; i++) {
     ayaStarts.push(acc);
-    acc += getDur(i) + ayaGap;
+    acc += getDur(i) + getSegmentGap(i);
   }
   const totalDuration = acc;
   const FPS = parseInt(gv("export-fps") || "30") || 30;
@@ -2924,7 +2997,7 @@ async function startExport(type) {
     const playExportAya = (idx) => {
       if (idx >= S.verses.length || S.exportCancel) return;
       const aya2 = S.verses[idx];
-      const url2 = buildAudioUrl(reciter.folder, surahNum, aya2.numberInSurah);
+      const url2 = buildSegmentAudioUrl(aya2, reciter, surahNum);
       const a2 = new Audio(url2);
       a2.volume = gainVal;
       try {
@@ -2952,7 +3025,7 @@ async function startExport(type) {
   const getAyaAt = (t) => {
     let idx = S.verses.length - 1;
     for (let i = 0; i < S.verses.length; i++) {
-      if (t < ayaStarts[i] + getDur(i) + ayaGap) { idx = i; break; }
+      if (t < ayaStarts[i] + getDur(i) + getSegmentGap(i)) { idx = i; break; }
     }
     return idx;
   };
@@ -2986,8 +3059,11 @@ async function startExport(type) {
       const pct = Math.min(99, Math.round((projectTime / totalDuration) * 100));
       $("rec-fill").style.width = pct + "%";
       $("rec-pct").textContent = pct + "%";
+      const label = isBismillahSegment(S.verses[ci])
+        ? "البسملة"
+        : `الآية ${getAyahOrdinal(ci)}/${getAyahTotal()}`;
       $("rec-sub").textContent =
-      `🎬 ${targetFrame}/${totalFrames} — الآية ${ci + 1}/${S.verses.length} — ${fmt(projectTime)} / ${fmt(totalDuration)}`;
+      `🎬 ${targetFrame}/${totalFrames} — ${label} — ${fmt(projectTime)} / ${fmt(totalDuration)}`;
       updateAyaUI();
     }
 
@@ -3420,8 +3496,15 @@ async function loadVerses() {
     }
   }
 
-  S.verses = verses; S.currentAya = 0; S.elapsed = 0; S.ayaDurations = [];
-  $("aya-info").textContent = `✅ ${verses.length} آية من سورة ${surah?.name || ""} ${source}`;
+  const addBismillah = shouldInsertBismillah(surahNum);
+  S.verses = addBismillah ? [makeBismillahSegment(), ...verses] : verses;
+  S.currentAya = 0;
+  S.elapsed = 0;
+  S.ayaDurations = addBismillah ? [BISMILLAH_FALLBACK_DUR] : [];
+  const bismillahNote = ge("bismillah-intro") && surahNum === 9
+    ? " — تُخطيت البسملة لسورة التوبة"
+    : (addBismillah ? " + البسملة" : "");
+  $("aya-info").textContent = `✅ ${verses.length} آية من سورة ${surah?.name || ""} ${source}${bismillahNote}`;
   updateAyaUI();
   await loadTranslations();
 }
@@ -3456,9 +3539,10 @@ async function loadTranslations() {
     } catch (e) { S.translations = []; return; }
   }
 
-  S.translations = allAyahs
+  const translations = allAyahs
     .filter(a => a.n >= from && a.n <= to)
     .map(a => a.t);
+  S.translations = hasBismillahIntroSegment() ? [null, ...translations] : translations;
 }
 
 // ══════════════════════════════════════════════════════
@@ -3663,6 +3747,7 @@ function captureState() {
   return {
     surah: $("surah-sel").value, from: $("from-aya").value, to: $("to-aya").value,
     reciter: radioVal("reciter"), fmt: radioVal("fmt"),
+    bismillahIntro: ge("bismillah-intro"),
     gc1: $("gc1").value, gc2: $("gc2").value,
     font: radioVal("font"), txtCol: $("txt-col").value,
     wm: $("wm-text").value, orn: radioVal("orn"),
@@ -3674,6 +3759,7 @@ function captureState() {
 function applyState(st) {
   setV("surah-sel", st.surah); setV("from-aya", st.from); setV("to-aya", st.to);
   setR("reciter", st.reciter); setR("fmt", st.fmt); setR("orn", st.orn);
+  if ($("bismillah-intro") && typeof st.bismillahIntro === "boolean") $("bismillah-intro").checked = st.bismillahIntro;
   setCol("gc1", st.gc1); setCol("gc2", st.gc2);
   if ($("gc1t")) $("gc1t").value = st.gc1 || ""; if ($("gc2t")) $("gc2t").value = st.gc2 || "";
   setCol("txt-col", st.txtCol);
@@ -4419,7 +4505,7 @@ async function startExportDesktop(codecKey) {
 
   // ── تحميل صوت كل آية كـ AudioBuffer ────────────────
   const manualDur = parseFloat(gv("aya-dur")) || 6;
-  const getDur    = (i) => (S.ayaDurations[i] && S.ayaDurations[i] > 0.5) ? S.ayaDurations[i] : manualDur;
+  const getDur    = (i) => getSegmentAudioDur(i, manualDur);
   const surahNum  = parseInt($("surah-sel").value) || 1;
   const reciter   = S.reciters.find(r => r.id === radioVal("reciter")) || S.reciters[0];
   const recGain   = gv("rec-vol") / 100;
@@ -4427,7 +4513,7 @@ async function startExportDesktop(codecKey) {
   let loaded = 0;
   const audioBuffers = await Promise.all(S.verses.map(async (aya, i) => {
     if (cancelRef.canceled) return null;
-    const url = buildAudioUrl(reciter.folder, surahNum, aya.numberInSurah);
+    const url = buildSegmentAudioUrl(aya, reciter, surahNum);
     try {
       const res = await fetch(url, { cache: "force-cache" });
       if (!res.ok) throw new Error("HTTP " + res.status);
@@ -4448,10 +4534,9 @@ async function startExportDesktop(codecKey) {
 
   // ── حساب البداية الزمنية لكل آية والمدة الكلية ─────
   // فاصل صمت يُحشر بعد كل آية ضمن الخانة الزمنية
-  const ayaGap = getAyaGap();
   const ayaStarts = [];
   let acc = 0;
-  for (let i = 0; i < S.verses.length; i++) { ayaStarts.push(acc); acc += getDur(i) + ayaGap; }
+  for (let i = 0; i < S.verses.length; i++) { ayaStarts.push(acc); acc += getDur(i) + getSegmentGap(i); }
   const totalDuration = acc;
   if (totalDuration < 0.5) {
     _finishExportUi();
@@ -4492,7 +4577,7 @@ async function startExportDesktop(codecKey) {
   // ── دالة استنتاج الآية الحالية من الزمن (تشمل فاصل الصمت) ──
   const getAyaAt = (t) => {
     for (let i = 0; i < S.verses.length; i++) {
-      if (t < ayaStarts[i] + getDur(i) + ayaGap) return i;
+      if (t < ayaStarts[i] + getDur(i) + getSegmentGap(i)) return i;
     }
     return S.verses.length - 1;
   };
