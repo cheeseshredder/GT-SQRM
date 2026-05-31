@@ -1267,15 +1267,17 @@ function drawBg(ctx, W, H, ts) {
     imgCover(ctx, S.bgImg, 0, 0, W, H);
     ctx.restore();
   } else if (bgt === "video" && (S._exportBgFrameImg || S.bgVid)) {
-    const src = S._exportBgFrameImg || S.bgVid;
-    const ready = (src instanceof HTMLVideoElement) ? src.readyState >= 2 : !!src;
-    if (ready) {
+    if (S._exportBgFrameImg) {
       ctx.save();
       applyBgMotion(ctx, W, H, bgm, ts);
-      if (S._exportBgFrameImg) {
-        imgCover(ctx, src, 0, 0, W, H);
-      } else {
-        updateBgVidCrossfade();
+      imgCover(ctx, S._exportBgFrameImg, 0, 0, W, H);
+      ctx.restore();
+    } else {
+      updateBgVidCrossfade();
+      const src = S.bgVid;
+      if (src && src.readyState >= 2) {
+        ctx.save();
+        applyBgMotion(ctx, W, H, bgm, ts);
         const alpha = S.bgVidFadeProgress;
         ctx.globalAlpha = 1 - alpha;
         imgCover(ctx, src, 0, 0, W, H);
@@ -1283,10 +1285,10 @@ function drawBg(ctx, W, H, ts) {
           ctx.globalAlpha = alpha;
           imgCover(ctx, S.bgVidNext, 0, 0, W, H);
         }
+        ctx.restore();
+      } else {
+        drawGradient(ctx, W, H);
       }
-      ctx.restore();
-    } else {
-      drawGradient(ctx, W, H);
     }
   } else {
     drawGradient(ctx, W, H);
