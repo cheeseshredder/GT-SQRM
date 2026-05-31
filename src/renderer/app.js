@@ -548,6 +548,7 @@ const S = {
   bgVidActiveIdx: 0,
   bgVidNext: null,         // الفيديو القادم للـ crossfade
   bgVidFadeProgress: 0,    // 0→1 خلال 500ms قبل انتهاء الحالي
+  bgVidLoopSwapReady: false,
   bgMotionT: 0,
   audioCtx: null, analyser: null, exportDest: null,
   recAudioEl: null, recAudioSource: null, recGainNode: null, recExportGain: null,
@@ -898,6 +899,8 @@ function initEventListeners() {
       sv(el, s.outId, s.unit);
     }
   });
+  const bgLoopMode = $("bg-loop-mode");
+  if (bgLoopMode) bgLoopMode.addEventListener("change", resetBgVidCrossfadeState);
 
   // Color picker + text sync
   const syncPairs = [
@@ -1267,18 +1270,19 @@ function drawBg(ctx, W, H, ts) {
     const src = S._exportBgFrameImg || S.bgVid;
     const ready = (src instanceof HTMLVideoElement) ? src.readyState >= 2 : !!src;
     if (ready) {
-      // ── Crossfade بين مقطعَين عند الانتقال (المعاينة فقط) ──
-      updateBgVidCrossfade();
-      const alpha = S.bgVidFadeProgress;
       ctx.save();
       applyBgMotion(ctx, W, H, bgm, ts);
-      // ارسم الحالي بشفافية متناقصة
-      ctx.globalAlpha = 1 - alpha;
-      imgCover(ctx, src, 0, 0, W, H);
-      // ارسم القادم فوقه بشفافية متزايدة (إن كان يتم الـ crossfade)
-      if (S.bgVidNext && S.bgVidNext.readyState >= 2 && alpha > 0) {
-        ctx.globalAlpha = alpha;
-        imgCover(ctx, S.bgVidNext, 0, 0, W, H);
+      if (S._exportBgFrameImg) {
+        imgCover(ctx, src, 0, 0, W, H);
+      } else {
+        updateBgVidCrossfade();
+        const alpha = S.bgVidFadeProgress;
+        ctx.globalAlpha = 1 - alpha;
+        imgCover(ctx, src, 0, 0, W, H);
+        if (S.bgVidNext && S.bgVidNext.readyState >= 2 && alpha > 0) {
+          ctx.globalAlpha = alpha;
+          imgCover(ctx, S.bgVidNext, 0, 0, W, H);
+        }
       }
       ctx.restore();
     } else {
@@ -2825,7 +2829,11 @@ function applyBgVidTrim() {
       const tt = getBgVidTrim();
       if (!tt) return;
       if (S.bgVid.currentTime >= tt.end - 0.05) {
-        try { S.bgVid.currentTime = tt.start; } catch (_) {}
+        if (shouldUseSingleBgCrossfade() && S.bgVidNext && S.bgVidLoopSwapReady) {
+          switchToNextBgVid();
+        } else {
+          try { S.bgVid.currentTime = tt.start; } catch (_) {}
+        }
       }
     };
     S.bgVid.addEventListener("timeupdate", S.bgVid._trimHandler);
@@ -2911,17 +2919,27 @@ function onBgMedia(input, type) {
 }
 
 // ── إدارة قائمة مقاطع الخلفية (playlist) ──────────────
+function createBgVideoElement(url) {
+  const vid = document.createElement("video");
+  vid.src = url;
+  vid.muted = true;
+  vid.playsInline = true;
+  vid.preload = "auto";
+  vid.addEventListener("ended", () => switchToNextBgVid());
+  return vid;
+}
+
 function addBgVidItem(file) {
   const url = URL.createObjectURL(file);
-  const vid = document.createElement("video");
-  vid.src = url; vid.muted = true; vid.playsInline = true; vid.preload = "auto";
-  // عند نهاية المقطع: انتقل للتالي تلقائياً (تتابع playlist)
-  vid.addEventListener("ended", () => switchToNextBgVid());
+  const vid = createBgVideoElement(url);
+  const loopVid = createBgVideoElement(url);
+  loopVid.load();
   vid.onloadeddata = () => {
     const item = {
       file, vid, name: file.name,
       dur: isFinite(vid.duration) ? vid.duration : 0,
       url,
+      loopVid,
       audioEnabled: false,   // الصوت معطّل افتراضياً
       audioGain: 0.5,
       audioBuffer: null,
@@ -2950,7 +2968,32 @@ function addBgVidItem(file) {
 
 function switchToNextBgVid() {
   if (S.bgVidItems.length < 2) {
-    if (S.bgVid) { try { S.bgVid.currentTime = 0; S.bgVid.play().catch(() => {}); } catch (_) {} }
+    const item = S.bgVidItems[S.bgVidActiveIdx] || S.bgVidItems[0];
+    if (item && shouldUseSingleBgCrossfade() && S.bgVidNext && S.bgVidLoopSwapReady) {
+      const oldVid = S.bgVid;
+      const nextVid = S.bgVidNext;
+      item.vid = nextVid;
+      item.loopVid = oldVid;
+      S.bgVid = nextVid;
+      S.bgVidFile = item.file;
+      S.bgVidNext = null;
+      S.bgVidFadeProgress = 0;
+      S.bgVidLoopSwapReady = false;
+      try {
+        oldVid.pause();
+        oldVid.currentTime = getBgVidLoopBounds(oldVid).start;
+      } catch (_) {}
+      if (S.playing || S.exporting) {
+        try { nextVid.play().catch(() => {}); } catch (_) {}
+      }
+      return;
+    }
+    if (S.bgVid) {
+      try {
+        S.bgVid.currentTime = getBgVidLoopBounds(S.bgVid).start;
+        S.bgVid.play().catch(() => {});
+      } catch (_) {}
+    }
     return;
   }
   const nextIdx = (S.bgVidActiveIdx + 1) % S.bgVidItems.length;
@@ -2974,17 +3017,109 @@ function getCrossfadeDur() {
   const ms = parseInt(gv("bg-crossfade-ms") || "1000");
   return Math.max(0, ms) / 1000;
 }
+function getBgLoopMode() {
+  const el = $("bg-loop-mode");
+  return el ? el.value : "crossfade";
+}
+function shouldUseSingleBgCrossfade() {
+  return getBgLoopMode() === "crossfade" && getCrossfadeDur() > 0 && S.bgVidItems.length === 1;
+}
+function getBgVidLoopBounds(vid = S.bgVid) {
+  const trim = (typeof getBgVidTrim === "function") ? getBgVidTrim() : null;
+  const dur = vid && isFinite(vid.duration) ? vid.duration : 0;
+  const start = trim ? trim.start : 0;
+  const end = trim ? trim.end : dur;
+  return {
+    start: Math.max(0, start || 0),
+    end: Math.max(start + 0.1, end || dur || 0),
+  };
+}
+function getBgVidSegmentDuration() {
+  const bounds = getBgVidLoopBounds(S.bgVid);
+  return Math.max(0, bounds.end - bounds.start);
+}
+function getEffectiveBgCrossfadeDur() {
+  const dur = getBgVidSegmentDuration();
+  if (!dur) return 0;
+  return Math.max(0, Math.min(getCrossfadeDur(), dur * 0.45));
+}
+function resetBgVidCrossfadeState() {
+  S.bgVidFadeProgress = 0;
+  S.bgVidLoopSwapReady = false;
+  if (S.bgVidNext) {
+    try {
+      S.bgVidNext.pause();
+      S.bgVidNext.currentTime = getBgVidLoopBounds(S.bgVidNext).start;
+    } catch (_) {}
+  }
+  S.bgVidNext = null;
+}
 function easeInOutCubic(t) {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 function updateBgVidCrossfade() {
-  if (!S.bgVid || S.bgVidItems.length < 2) {
+  if (!S.bgVid) {
     S.bgVidNext = null; S.bgVidFadeProgress = 0; return;
   }
   const cur = S.bgVid;
   if (!isFinite(cur.duration) || cur.duration <= 0) return;
 
-  const xf = getCrossfadeDur();
+  if (S.bgVidItems.length === 1) {
+    if (!shouldUseSingleBgCrossfade()) {
+      resetBgVidCrossfadeState();
+      return;
+    }
+    const item = S.bgVidItems[S.bgVidActiveIdx] || S.bgVidItems[0];
+    const nextVid = item && item.loopVid;
+    if (!nextVid) {
+      resetBgVidCrossfadeState();
+      return;
+    }
+    const bounds = getBgVidLoopBounds(cur);
+    const xfSingle = getEffectiveBgCrossfadeDur();
+    if (xfSingle <= 0) {
+      resetBgVidCrossfadeState();
+      return;
+    }
+    const remaining = bounds.end - cur.currentTime;
+    if (remaining <= 0.03 && S.bgVidNext && S.bgVidLoopSwapReady) {
+      switchToNextBgVid();
+      return;
+    }
+    if (remaining <= xfSingle && remaining > 0) {
+      if (S.bgVidNext !== nextVid) {
+        S.bgVidNext = nextVid;
+        try {
+          nextVid.currentTime = bounds.start;
+          nextVid.play().catch(() => {});
+        } catch (_) {}
+      } else if (S.playing || S.exporting) {
+        try { nextVid.play().catch(() => {}); } catch (_) {}
+      }
+      if (nextVid.readyState < 2) {
+        S.bgVidFadeProgress = 0;
+        S.bgVidLoopSwapReady = false;
+        return;
+      }
+      const linear = Math.max(0, Math.min(1, 1 - (remaining / xfSingle)));
+      S.bgVidFadeProgress = easeInOutCubic(linear);
+      S.bgVidLoopSwapReady = true;
+    } else {
+      S.bgVidFadeProgress = 0;
+      S.bgVidLoopSwapReady = false;
+      if (S.bgVidNext) {
+        try { S.bgVidNext.pause(); } catch (_) {}
+      }
+      S.bgVidNext = null;
+    }
+    return;
+  }
+
+  if (S.bgVidItems.length < 2) {
+    S.bgVidNext = null; S.bgVidFadeProgress = 0; return;
+  }
+
+  const xf = getBgLoopMode() === "crossfade" ? getCrossfadeDur() : 0;
   if (xf <= 0) { S.bgVidNext = null; S.bgVidFadeProgress = 0; return; }
 
   const trim = (typeof getBgVidTrim === "function") ? getBgVidTrim() : null;
@@ -3010,7 +3145,11 @@ function updateBgVidCrossfade() {
 function removeBgVidItem(idx) {
   if (idx < 0 || idx >= S.bgVidItems.length) return;
   const item = S.bgVidItems[idx];
-  try { item.vid.pause(); URL.revokeObjectURL(item.url); } catch (_) {}
+  try {
+    item.vid.pause();
+    if (item.loopVid) item.loopVid.pause();
+    URL.revokeObjectURL(item.url);
+  } catch (_) {}
   S.bgVidItems.splice(idx, 1);
   // تأثير فوري: فعّل الأول من الترتيب الجديد
   if (S.bgVidItems.length === 0) {
@@ -3043,6 +3182,7 @@ function activateBgVidByIndex(idx, resetTime = true) {
   }
   idx = Math.max(0, Math.min(idx, S.bgVidItems.length - 1));
   // أوقف الحالي
+  resetBgVidCrossfadeState();
   if (S.bgVid) { try { S.bgVid.pause(); } catch (_) {} }
   const item = S.bgVidItems[idx];
   S.bgVidActiveIdx = idx;
@@ -3339,8 +3479,9 @@ function pausePlayer() {
   if (S.bgAudioEl) S.bgAudioEl.pause();
   // إعادة فيديو الخلفية للبداية تحضيراً للتصدير
   if (S.bgVid) {
+    resetBgVidCrossfadeState();
     S.bgVid.pause();
-    S.bgVid.currentTime = 0;
+    S.bgVid.currentTime = getBgVidLoopBounds(S.bgVid).start;
   }
 }
 
@@ -3456,7 +3597,11 @@ async function startExport(type) {
   stopRecitationAudio();
   if (S.bgAudioEl) S.bgAudioEl.pause();
   // إعادة فيديو الخلفية للبداية دائماً عند التصدير
-  if (S.bgVid) { S.bgVid.currentTime = 0; S.bgVid.play().catch(() => {}); }
+  if (S.bgVid) {
+    resetBgVidCrossfadeState();
+    S.bgVid.currentTime = getBgVidLoopBounds(S.bgVid).start;
+    S.bgVid.play().catch(() => {});
+  }
 
   $("rec-ov").classList.add("on");
   $("rec-fill").style.width = "0%";
@@ -5170,7 +5315,10 @@ async function startExportDesktop(codecKey) {
   // أوقف كل تشغيل حيّ — المعاينة لا تتدخل في التصدير
   stopRecitationAudio();
   if (S.bgAudioEl)            S.bgAudioEl.pause();
-  if (S.bgVid && !S.bgVid.paused) { try { S.bgVid.pause(); } catch (_) {} }
+  if (S.bgVid) {
+    resetBgVidCrossfadeState();
+    if (!S.bgVid.paused) { try { S.bgVid.pause(); } catch (_) {} }
+  }
 
   const ctx = await resumeAudioCtx();
 
@@ -5295,16 +5443,27 @@ async function startExportDesktop(codecKey) {
   let bgVideoBytes = null;
   let bgVideoBytesList = null;
   let bgClipDurations = null;
+  const bgSingleLoopCrossfade = S.bgVidItems && S.bgVidItems.length === 1 && shouldUseSingleBgCrossfade();
   if (S.bgVidItems && S.bgVidItems.length > 1) {
     try {
       $("rec-sub").textContent = `📥 قراءة ${S.bgVidItems.length} مقاطع للخلفية…`;
       bgVideoBytesList = await Promise.all(S.bgVidItems.map(it => it.file.arrayBuffer()));
       bgClipDurations  = S.bgVidItems.map(it => it.dur || 0);
     } catch (e) { console.warn("multi-bg bytes read failed:", e); }
+  } else if (S.bgVidItems && S.bgVidItems.length === 1) {
+    try {
+      $("rec-sub").textContent = "📥 قراءة فيديو الخلفية…";
+      const item = S.bgVidItems[0];
+      bgVideoBytes = await item.file.arrayBuffer();
+      bgClipDurations = [getBgVidSegmentDuration() || item.dur || 0];
+    } catch (e) {
+      console.warn("Could not read bg video item bytes:", e);
+    }
   } else if (S.bgVid && S.bgVidFile) {
     try {
       $("rec-sub").textContent = "📥 قراءة فيديو الخلفية…";
       bgVideoBytes = await S.bgVidFile.arrayBuffer();
+      bgClipDurations = [getBgVidSegmentDuration()];
     } catch (e) {
       console.warn("Could not read bg video file bytes:", e);
     }
@@ -5339,7 +5498,8 @@ async function startExportDesktop(codecKey) {
       bgVideoBytes,
       bgVideoBytesList,
       bgClipDurations,      // مدّة كل مقطع — لازم للـ crossfade xfade
-      bgCrossfadeSec: getCrossfadeDur(),  // نفس مدة المعاينة بالضبط
+      bgCrossfadeSec: bgSingleLoopCrossfade ? getEffectiveBgCrossfadeDur() : (getBgLoopMode() === "crossfade" ? getCrossfadeDur() : 0),  // نفس مدة المعاينة بالضبط
+      bgSingleLoopCrossfade,
       bgVidTrim,
       bgAudioTrim,
       codecKey,

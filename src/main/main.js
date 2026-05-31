@@ -459,13 +459,14 @@ ipcMain.on("ffmpeg-pipe-cancel", () => {
 // ── استخراج إطارات فيديو الخلفية مسبقاً (مرة واحدة) ───
 //    أسرع وأكثر استقراراً من seek على HTMLVideoElement
 ipcMain.handle("extract-bg-frames", async (event, opts) => {
-  const { videoBytes, videoBytesList, clipDurations, crossfadeSec, fps, width, height, totalDuration, trimStart, trimEnd } = opts;
+  const { videoBytes, videoBytesList, clipDurations, crossfadeSec, singleLoopCrossfade, fps, width, height, totalDuration, trimStart, trimEnd } = opts;
   const ffmpegPath = await getBinPath("ffmpeg");
   if (!ffmpegPath) throw new Error("ffmpeg not found");
 
   // ── دعم رفع متعدد للفيديوهات: نضمّها مسبقاً في ملف واحد ───
   let inputPath;
   const inputsToClean = [];
+  let inputAlreadyLooped = false;
   const list = Array.isArray(videoBytesList) && videoBytesList.length ? videoBytesList : (videoBytes ? [videoBytes] : []);
   if (!list.length) throw new Error("no video data");
 
@@ -531,6 +532,68 @@ ipcMain.handle("extract-bg-frames", async (event, opts) => {
     inputPath = concatPath;
   }
 
+  // For one background video, build a timeline-long crossfaded loop instead of
+  // relying on hard -stream_loop boundaries.
+  if (list.length === 1 && singleLoopCrossfade) {
+    const baseDur = Array.isArray(clipDurations) && Number.isFinite(clipDurations[0])
+      ? clipDurations[0]
+      : 0;
+    const clipDur = (typeof trimStart === "number" && typeof trimEnd === "number" && trimEnd > trimStart)
+      ? Math.max(0, trimEnd - trimStart)
+      : baseDur;
+    const xf = Math.min(Math.max(0, crossfadeSec || 0), Math.max(0, clipDur * 0.45));
+
+    if (clipDur > 0.2 && xf > 0.03 && totalDuration > clipDur - xf) {
+      const loopPath = path.join(os.tmpdir(), `gt-sqrm-bg-loop-${Date.now()}.mp4`);
+      inputsToClean.push(loopPath);
+
+      const step = Math.max(0.1, clipDur - xf);
+      const copies = Math.max(2, Math.min(160, Math.ceil((totalDuration - clipDur) / step) + 3));
+      const W12 = Math.round(width * 1.2), H12 = Math.round(height * 1.2);
+
+      const loopArgs = ["-y", "-loglevel", "error"];
+      for (let i = 0; i < copies; i++) loopArgs.push("-i", inputPath);
+
+      const trimFilter = (typeof trimStart === "number" && typeof trimEnd === "number" && trimEnd > trimStart)
+        ? `trim=start=${trimStart}:end=${trimEnd},`
+        : "";
+      const filterInputs = Array.from({ length: copies }, (_, i) =>
+        `[${i}:v:0]${trimFilter}setpts=PTS-STARTPTS,scale=${W12}:${H12}:force_original_aspect_ratio=increase,crop=${W12}:${H12},setsar=1,fps=${fps},format=yuv420p[v${i}]`
+      ).join(";");
+
+      const segs = [];
+      let prev = "v0";
+      let offset = 0;
+      for (let i = 1; i < copies; i++) {
+        offset += step;
+        const out = (i === copies - 1) ? "outv" : `xl${i}`;
+        segs.push(`[${prev}][v${i}]xfade=transition=fade:duration=${xf}:offset=${offset.toFixed(3)}[${out}]`);
+        prev = out;
+      }
+
+      loopArgs.push(
+        "-filter_complex", `${filterInputs};${segs.join(";")}`,
+        "-map", "[outv]",
+        "-t", String(Math.min(totalDuration + 1, clipDur + (copies - 1) * step)),
+        "-an",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-pix_fmt", "yuv420p",
+        loopPath
+      );
+
+      await new Promise((resolve, reject) => {
+        const proc = spawn(ffmpegPath, loopArgs);
+        let err = "";
+        proc.stderr.on("data", d => { err += d.toString(); });
+        proc.on("close", code => code === 0 ? resolve() : reject(new Error(`loop crossfade failed (${code}): ${err.slice(-400)}`)));
+        proc.on("error", reject);
+      });
+
+      inputPath = loopPath;
+      inputAlreadyLooped = true;
+    }
+  }
+
   // مجلد للإطارات
   const outDir = path.join(os.tmpdir(), `gt-sqrm-bgframes-${Date.now()}`);
   fs.mkdirSync(outDir, { recursive: true });
@@ -553,8 +616,8 @@ ipcMain.handle("extract-bg-frames", async (event, opts) => {
 
   const args = [
     "-y", "-loglevel", "error",
-    "-stream_loop", "-1",
-    ...trimArgs,
+    ...(inputAlreadyLooped ? [] : ["-stream_loop", "-1"]),
+    ...(inputAlreadyLooped ? [] : trimArgs),
     "-i", inputPath,
     "-vf", `fps=${fps},scale=${scaleW}:${scaleH}:force_original_aspect_ratio=increase,crop=${scaleW}:${scaleH}`,
     "-frames:v", String(totalFrames),

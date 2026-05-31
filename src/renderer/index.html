@@ -636,7 +636,14 @@ body.offline .offline-badge{display:block}
           <div id="bg-vid-ctrl" style="display:none;margin-top:8px">
             <div class="fu-area"><input type="file" accept="video/*" id="bg-vid-input" multiple><div class="fu-icon">🎥</div><div class="fu-txt">فيديو خلفية (يمكن رفع عدة مقاطع)<br><small>تُشغَّل بالتسلسل ثم تعود من البداية</small></div></div>
             <div id="bg-vid-list" style="margin-top:6px"></div>
-            <div class="fg" style="margin-top:5px"><label class="fl">مدة الانتقال السلس بين المقاطع</label>
+            <div class="fg" style="margin-top:5px"><label class="fl">طريقة تكرار فيديو الخلفية</label>
+              <select class="fc" id="bg-loop-mode">
+                <option value="crossfade" selected>حلقة بتلاشي ناعم</option>
+                <option value="normal">تكرار عادي</option>
+              </select>
+              <span class="note" style="display:block;margin-top:2px">التلاشي الناعم يخلط نهاية المقطع مع بدايته بدل الرجوع الحاد أو العكس.</span>
+            </div>
+            <div class="fg" style="margin-top:5px"><label class="fl">مدة التلاشي عند الحلقة / بين المقاطع</label>
               <div class="sg"><input type="range" min="0" max="2000" step="50" value="1000" id="bg-crossfade-ms"><span class="sv" id="bg-crossfade-ms-v">1000ms</span></div>
             </div>
             <div id="bg-vid-thumb"><video id="bg-vid-preview" muted loop playsinline></video></div>

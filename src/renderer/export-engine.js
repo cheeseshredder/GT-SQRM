@@ -285,6 +285,7 @@ async function startDesktopExportV2(opts) {
     bgVideoBytesList,    // Array<ArrayBuffer> لـ playlist (يضمّ في ffmpeg)
     bgClipDurations,     // مدد المقاطع (للـ xfade)
     bgCrossfadeSec,      // مدة الـ crossfade بالثواني
+    bgSingleLoopCrossfade,
     bgVidTrim,           // {start,end} لتقطيع فيديو الخلفية (اختياري)
     bgAudioTrim,         // {start,end} لتقطيع صوت الخلفية (اختياري)
     codecKey,
@@ -351,8 +352,9 @@ async function startDesktopExportV2(opts) {
         const extracted = await window.SQRM.extractBgFrames({
           videoBytes: vidBytes,
           videoBytesList: hasMulti ? bgVideoBytesList : null,
-          clipDurations:  hasMulti ? bgClipDurations : null,
-          crossfadeSec:   hasMulti ? bgCrossfadeSec  : 0,
+          clipDurations:  (hasMulti || bgSingleLoopCrossfade) ? bgClipDurations : null,
+          crossfadeSec:   (hasMulti || bgSingleLoopCrossfade) ? bgCrossfadeSec  : 0,
+          singleLoopCrossfade: !!bgSingleLoopCrossfade,
           fps: FPS,
           width:  W,
           height: H,
