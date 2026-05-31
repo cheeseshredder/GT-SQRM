@@ -15,7 +15,7 @@
     "build:all": "bash ./scripts/build-all.sh all",
     "build:clean": "bash ./scripts/build-all.sh clean",
     "build:raw": "electron-builder --linux AppImage deb rpm",
-    "build:win": "electron-builder --win",
+    "build:win": "electron-builder --win portable --publish never",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
@@ -58,7 +58,6 @@
     },
     "win": {
       "target": [
-        "nsis",
         "portable"
       ],
       "icon": "GT-SQRM-icon.ico",

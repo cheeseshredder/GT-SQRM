@@ -50,11 +50,11 @@ jobs:
           .\resources\bin\yt-dlp.exe --version
 
       - name: Build Windows app
-        run: npx electron-builder --win --publish never
+        run: npx electron-builder --win portable --publish never
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: GT-SQRM-windows
-          path: dist/*
+          name: GT-SQRM-windows-portable
+          path: dist/*.exe
           if-no-files-found: error
