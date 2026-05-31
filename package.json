@@ -8,19 +8,21 @@
   "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
-    "dev": "NODE_ENV=development electron .",
+    "dev": "cross-env NODE_ENV=development electron .",
     "build": "bash ./scripts/build-all.sh appimage",
     "build:deb": "bash ./scripts/build-all.sh deb",
     "build:rpm": "bash ./scripts/build-all.sh rpm",
     "build:all": "bash ./scripts/build-all.sh all",
     "build:clean": "bash ./scripts/build-all.sh clean",
     "build:raw": "electron-builder --linux AppImage deb rpm",
+    "build:win": "electron-builder --win",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
     "fluent-ffmpeg": "^2.1.3"
   },
   "devDependencies": {
+    "cross-env": "^7.0.3",
     "electron": "^29.0.0",
     "electron-builder": "^24.9.0"
   },
@@ -50,6 +52,23 @@
           "filter": [
             "ffmpeg",
             "yt-dlp"
+          ]
+        }
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "GT-SQRM-icon.ico",
+      "extraFiles": [
+        {
+          "from": "resources/bin/",
+          "to": "bin/",
+          "filter": [
+            "ffmpeg.exe",
+            "yt-dlp.exe"
           ]
         }
       ]

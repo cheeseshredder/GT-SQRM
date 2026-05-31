@@ -1,0 +1,60 @@
+name: Build Windows
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download Windows binaries
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path resources/bin | Out-Null
+
+          $ffmpegZip = Join-Path $env:RUNNER_TEMP "ffmpeg.zip"
+          $ffmpegDir = Join-Path $env:RUNNER_TEMP "ffmpeg"
+          Invoke-WebRequest `
+            -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip" `
+            -OutFile $ffmpegZip
+          Expand-Archive -Path $ffmpegZip -DestinationPath $ffmpegDir -Force
+          $ffmpegExe = Get-ChildItem -Path $ffmpegDir -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          if (-not $ffmpegExe) {
+            throw "ffmpeg.exe was not found in the downloaded archive."
+          }
+          Copy-Item -LiteralPath $ffmpegExe.FullName -Destination resources/bin/ffmpeg.exe -Force
+
+          Invoke-WebRequest `
+            -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" `
+            -OutFile resources/bin/yt-dlp.exe
+
+      - name: Verify bundled binaries
+        shell: pwsh
+        run: |
+          .\resources\bin\ffmpeg.exe -version
+          .\resources\bin\yt-dlp.exe --version
+
+      - name: Build Windows app
+        run: npx electron-builder --win
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GT-SQRM-windows
+          path: dist/*
+          if-no-files-found: error

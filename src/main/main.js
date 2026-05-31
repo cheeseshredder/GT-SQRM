@@ -7,7 +7,9 @@ const os = require("os");
 const { spawn, execFile, exec } = require("child_process");
 const { promisify } = require("util");
 const execPromise = promisify(exec);
+const execFilePromise = promisify(execFile);
 
+const isWindows = process.platform === "win32";
 const isDev = process.env.NODE_ENV === "development";
 
 // خريطة لتخزين المسارات بعد العثور عليها (تخزين مؤقت)
@@ -26,6 +28,88 @@ path.join(os.homedir(), "bin"),
 // في حالة AppImage، المسار النسبي للمجلد bin بجانب التنفيذي
 ];
 
+function getBinaryNames(name) {
+  if (!isWindows) return [name];
+  return name.endsWith(".exe") ? [name] : [`${name}.exe`, name];
+}
+
+function cacheBinary(name, resolvedPath) {
+  binaryPaths[name] = resolvedPath;
+  return resolvedPath;
+}
+
+function getExtraBinCandidates(name) {
+  const candidates = [];
+
+  for (const base of EXTRA_PATHS) {
+    for (const binaryName of getBinaryNames(name)) {
+      candidates.push(path.join(base, binaryName));
+    }
+  }
+
+  if (isWindows) {
+    const localAppData = process.env.LOCALAPPDATA ||
+      path.join(os.homedir(), "AppData", "Local");
+    const windowsBases = [
+      path.join(localAppData, "Microsoft", "WinGet", "Links"),
+      path.join(localAppData, "Microsoft", "WindowsApps")
+    ];
+    const wingetPackages = path.join(localAppData, "Microsoft", "WinGet", "Packages");
+
+    try {
+      for (const entry of fs.readdirSync(wingetPackages, { withFileTypes: true })) {
+        if (entry.isDirectory() && entry.name.toLowerCase().includes(name.toLowerCase())) {
+          windowsBases.push(path.join(wingetPackages, entry.name));
+        }
+      }
+    } catch (_) {}
+
+    for (const base of windowsBases) {
+      for (const binaryName of getBinaryNames(name)) {
+        candidates.push(path.join(base, binaryName));
+      }
+    }
+  }
+
+  return candidates;
+}
+
+async function findInPath(binaryName) {
+  const locator = isWindows ? "where.exe" : "which";
+
+  try {
+    const { stdout } = await execFilePromise(locator, [binaryName], {
+      timeout: 5000,
+      windowsHide: true
+    });
+    const foundPath = stdout
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .find(line => line && fs.existsSync(line));
+
+    return foundPath || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function getPackagedBinCandidates(name) {
+  if (isDev) return [];
+
+  const roots = [
+    path.dirname(app.getPath("exe")),
+    process.resourcesPath
+  ].filter(Boolean);
+
+  const candidates = [];
+  for (const root of [...new Set(roots)]) {
+    for (const binaryName of getBinaryNames(name)) {
+      candidates.push(path.join(root, "bin", binaryName));
+    }
+  }
+  return candidates;
+}
+
 /**
  * البحث عن ملف تنفيذي في PATH وفي المسارات الإضافية
  * @param {string} name - اسم الملف التنفيذي (مثل 'ffmpeg' أو 'yt-dlp')
@@ -35,34 +119,25 @@ async function findBinary(name) {
   // إذا كان مخزناً مؤقتاً، أعده مباشرة
   if (binaryPaths[name]) return binaryPaths[name];
 
-  // 1. البحث في PATH باستخدام which
-  try {
-    const { stdout } = await execPromise(`which ${name}`);
-    const pathFromWhich = stdout.trim();
-    if (pathFromWhich && fs.existsSync(pathFromWhich)) {
-      binaryPaths[name] = pathFromWhich;
-      return pathFromWhich;
+  // 1. البحث في PATH باستخدام which/where.exe
+  for (const binaryName of getBinaryNames(name)) {
+    const pathFromLocator = await findInPath(binaryName);
+    if (pathFromLocator) {
+      return cacheBinary(name, pathFromLocator);
     }
-  } catch (e) {
-    // which فشل، تابع البحث
   }
 
   // 2. البحث في المسارات الإضافية
-  for (const base of EXTRA_PATHS) {
-    const fullPath = path.join(base, name);
+  for (const fullPath of getExtraBinCandidates(name)) {
     if (fs.existsSync(fullPath)) {
-      binaryPaths[name] = fullPath;
-      return fullPath;
+      return cacheBinary(name, fullPath);
     }
   }
 
-  // 3. في وضع الإنتاج (AppImage) ابحث بجانب التطبيق
-  if (!isDev) {
-    const appDir = path.dirname(app.getPath("exe"));
-    const localBin = path.join(appDir, "bin", name);
+  // 3. في وضع الإنتاج ابحث بجانب التطبيق
+  for (const localBin of getPackagedBinCandidates(name)) {
     if (fs.existsSync(localBin)) {
-      binaryPaths[name] = localBin;
-      return localBin;
+      return cacheBinary(name, localBin);
     }
   }
 
@@ -74,14 +149,16 @@ async function findBinary(name) {
  * الحصول على مسار الملف التنفيذي (مع تخزين مؤقت)
  */
 async function getBinPath(name) {
+  if (binaryPaths[name]) return binaryPaths[name];
+
   if (isDev) {
     // في وضع التطوير، نفضل البحث في PATH أولاً ثم الإضافية
     return await findBinary(name);
   } else {
     // في الإنتاج، نفضل المجلد المحلي أولاً، ثم النظام
-    const appDir = path.dirname(app.getPath("exe"));
-    const localBin = path.join(appDir, "bin", name);
-    if (fs.existsSync(localBin)) return localBin;
+    for (const localBin of getPackagedBinCandidates(name)) {
+      if (fs.existsSync(localBin)) return cacheBinary(name, localBin);
+    }
     return await findBinary(name);
   }
 }
