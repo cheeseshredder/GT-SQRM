@@ -550,6 +550,28 @@ body.offline .offline-badge{display:block}
         </div>
 
         <div class="sec">
+          <div class="sec-t">🎙️ تسجيل تلاوة مخصص</div>
+          <div class="tgg"><span class="tgl">استخدام تسجيل تلاوة مخصص</span><label class="tg"><input type="checkbox" id="custom-recitation-enabled"><span class="tgs"></span></label></div>
+          <div id="custom-recitation-controls" style="display:none;margin-top:7px">
+            <div class="fg">
+              <label class="fl">اختيار ملف صوتي</label>
+              <input type="file" class="fc" id="custom-recitation-file" accept="audio/*">
+            </div>
+            <div class="fg">
+              <label class="fl">طريقة التوقيت</label>
+              <select class="fc" id="custom-timing-mode">
+                <option value="equal">تقسيم تلقائي متساوٍ كبداية</option>
+                <option value="manual">توقيت يدوي</option>
+              </select>
+            </div>
+            <button class="btn btn-p bsm bfw" id="custom-timing-generate-btn">إنشاء / تحديث جدول التوقيت</button>
+            <span class="note" id="custom-recitation-status" style="display:block;margin-top:5px"></span>
+            <span class="note" style="display:block;margin-top:2px">عند استخدام تسجيل مخصص لا تُضاف البسملة تلقائياً؛ افترض أن الملف يحتويها إن أردتها. يجب اختيار الملف من جديد بعد إعادة فتح التطبيق.</span>
+            <div id="custom-timing-table-wrap" style="display:none;margin-top:7px"></div>
+          </div>
+        </div>
+
+        <div class="sec">
           <div class="sec-t">📐 مقاس الفيديو</div>
           <div class="rg">
             <div class="rc"><input type="radio" name="fmt" id="f1" value="9:16" checked><label for="f1"><span class="ri">📱</span><span>ريلز 9:16</span></label></div>

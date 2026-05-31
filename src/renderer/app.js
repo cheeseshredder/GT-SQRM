@@ -28,6 +28,7 @@ function buildAudioUrl(folder, surahNum, ayaNum) {
   return `${AUDIO_BASE}/${cleanFolder}/${String(surahNum).padStart(3,"0")}${String(ayaNum).padStart(3,"0")}.mp3`;
 }
 
+const CUSTOM_TIMINGS_KEY = "gt_sqrm_custom_timings_v1";
 const BISMILLAH_TEXT = "بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ";
 const BISMILLAH_FALLBACK_DUR = 2.5;
 
@@ -44,7 +45,7 @@ function makeBismillahSegment() {
 }
 
 function shouldInsertBismillah(surahNum) {
-  return !!ge("bismillah-intro") && surahNum !== 9;
+  return !isCustomRecitationEnabled() && !!ge("bismillah-intro") && surahNum !== 9;
 }
 
 function buildSegmentAudioUrl(aya, reciter, surahNum) {
@@ -73,16 +74,323 @@ function getSegmentFallbackDur(i, manualDur = parseFloat(gv("aya-dur")) || 6) {
 }
 
 function getSegmentAudioDur(i, manualDur = parseFloat(gv("aya-dur")) || 6) {
+  if (isCustomRecitationEnabled()) {
+    const row = S.customTimings[i];
+    if (row && row.end > row.start) return row.end - row.start;
+  }
   const audioDur = S.ayaDurations[i];
   return (audioDur && audioDur > 0.5) ? audioDur : getSegmentFallbackDur(i, manualDur);
 }
 
 function getSegmentGap(i) {
+  if (isCustomRecitationEnabled()) return 0;
   return isBismillahSegment(S.verses[i]) ? 0 : getAyaGap();
 }
 
 function getSequenceDuration() {
+  if (isCustomRecitationEnabled()) {
+    return S.customRecitationDuration || Math.max(0, ...S.customTimings.map(r => r.end || 0));
+  }
   return S.verses.reduce((sum, _aya, i) => sum + getSegmentAudioDur(i) + getSegmentGap(i), 0);
+}
+
+function isCustomRecitationEnabled() {
+  return !!ge("custom-recitation-enabled");
+}
+
+function getCurrentSurahNum() {
+  return parseInt($("surah-sel")?.value) || 1;
+}
+
+function getCustomRowKey(aya, surahNum = getCurrentSurahNum()) {
+  return `${surahNum}:${aya?.numberInSurah || ""}`;
+}
+
+function getPlaybackLabel(i) {
+  const aya = S.verses[i];
+  if (!aya) return "خارج توقيت الآيات";
+  return isBismillahSegment(aya) ? "البسملة" : `الآية ${getAyahOrdinal(i)}/${getAyahTotal() || S.verses.length}`;
+}
+
+function clampTime(t, max = Infinity) {
+  const n = parseFloat(t);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(n, max));
+}
+
+function restoreCustomTimings() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(CUSTOM_TIMINGS_KEY) || "null");
+    if (saved && Array.isArray(saved.rows)) {
+      S.customTimings = saved.rows;
+      S.customTimingMode = saved.timingMode || "equal";
+    } else if (Array.isArray(saved)) {
+      S.customTimings = saved;
+    }
+  } catch (_) {}
+}
+
+function persistCustomTimings() {
+  try {
+    localStorage.setItem(CUSTOM_TIMINGS_KEY, JSON.stringify({
+      timingMode: gv("custom-timing-mode") || S.customTimingMode || "equal",
+      rows: S.customTimings || []
+    }));
+  } catch (_) {}
+}
+
+function syncCustomTimingsToVerses(persist = true) {
+  const surahNum = getCurrentSurahNum();
+  const existing = new Map((S.customTimings || []).map(row => [row.key || `${row.surahNum}:${row.ayaNum}`, row]));
+  const ayahs = S.verses.filter(aya => !isBismillahSegment(aya));
+  let cursor = 0;
+  const fallbackStep = 3;
+  const equalStep = ayahs.length && S.customRecitationDuration ? S.customRecitationDuration / ayahs.length : 0;
+
+  S.customTimings = ayahs.map((aya, i) => {
+    const key = getCustomRowKey(aya, surahNum);
+    const prev = existing.get(key);
+    const start = prev ? clampTime(prev.start) : (equalStep ? i * equalStep : cursor);
+    const end = prev ? clampTime(prev.end) : (equalStep ? (i + 1) * equalStep : start + fallbackStep);
+    cursor = Math.max(cursor, end);
+    return {
+      key,
+      surahNum,
+      ayaNum: aya.numberInSurah,
+      label: `${surahNum}:${aya.numberInSurah}`,
+      text: aya.text,
+      start: Number(start.toFixed(3)),
+      end: Number(end.toFixed(3))
+    };
+  });
+
+  if (persist) persistCustomTimings();
+}
+
+function generateEqualCustomTimings(showToast = true) {
+  if (!S.verses.length) {
+    if (showToast) toast("⚠️ حمّل الآيات أولاً", "error");
+    return false;
+  }
+  if (!S.customRecitationDuration) {
+    if (showToast) toast("⚠️ اختر ملف التلاوة أولاً لمعرفة مدته", "error");
+    return false;
+  }
+  const ayahs = S.verses.filter(aya => !isBismillahSegment(aya));
+  if (!ayahs.length) return false;
+  const step = S.customRecitationDuration / ayahs.length;
+  const surahNum = getCurrentSurahNum();
+  S.customTimings = ayahs.map((aya, i) => ({
+    key: getCustomRowKey(aya, surahNum),
+    surahNum,
+    ayaNum: aya.numberInSurah,
+    label: `${surahNum}:${aya.numberInSurah}`,
+    text: aya.text,
+    start: Number((i * step).toFixed(3)),
+    end: Number(((i + 1) * step).toFixed(3))
+  }));
+  persistCustomTimings();
+  setCustomStateForTime(S.customPlaybackTime || 0);
+  renderCustomRecitationUI();
+  if (showToast) toast("✅ تم إنشاء جدول توقيت متساوٍ كبداية", "success");
+  return true;
+}
+
+function validateCustomRecitation(requireAudio = false) {
+  if (!isCustomRecitationEnabled()) return { ok: true };
+  if (!S.verses.length) return { ok: false, message: "⚠️ حمّل الآيات أولاً" };
+  if (requireAudio && !S.customRecitationFile) return { ok: false, message: "⚠️ اختر ملف التلاوة المخصص أولاً" };
+
+  syncCustomTimingsToVerses(false);
+  if (!S.customTimings.length) return { ok: false, message: "⚠️ لا يوجد جدول توقيت للآيات" };
+
+  let prevEnd = 0;
+  for (let i = 0; i < S.customTimings.length; i++) {
+    const row = S.customTimings[i];
+    row.start = clampTime(row.start);
+    row.end = clampTime(row.end);
+    if (row.end <= row.start) return { ok: false, message: `⚠️ توقيت ${row.label} غير صالح: النهاية يجب أن تكون بعد البداية` };
+    if (i > 0 && row.start < prevEnd - 0.001) return { ok: false, message: `⚠️ توقيت ${row.label} يتداخل مع الآية السابقة` };
+    if (S.customRecitationDuration && row.end > S.customRecitationDuration + 0.05) {
+      return { ok: false, message: `⚠️ توقيت ${row.label} يتجاوز مدة ملف الصوت` };
+    }
+    prevEnd = row.end;
+  }
+  return { ok: true };
+}
+
+function getCustomIndexFromTime(t) {
+  const rows = S.customTimings || [];
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (t >= row.start && t < row.end) return i;
+  }
+  return -1;
+}
+
+function setCustomStateForTime(t) {
+  const idx = getCustomIndexFromTime(t);
+  S.customPlaybackTime = Math.max(0, t);
+  S.currentAya = idx;
+  S.elapsed = idx >= 0 ? Math.max(0, t - S.customTimings[idx].start) : Math.max(0, t);
+}
+
+function seekCustomToTime(t) {
+  const total = getSequenceDuration() || S.customRecitationDuration || 1;
+  const nextTime = clampTime(t, total);
+  setCustomStateForTime(nextTime);
+  if (S.recAudioEl) {
+    try { S.recAudioEl.currentTime = nextTime; } catch (_) {}
+  }
+  updateAyaUI();
+  updateProgressUI();
+}
+
+function seekCustomToIndex(i) {
+  const rows = S.customTimings || [];
+  if (!rows.length) return;
+  const idx = Math.max(0, Math.min(rows.length - 1, i));
+  seekCustomToTime(rows[idx].start);
+}
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;"
+  }[c]));
+}
+
+function updateCustomRecitationStatus() {
+  const status = $("custom-recitation-status");
+  if (!status) return;
+  if (!isCustomRecitationEnabled()) {
+    status.textContent = "";
+    return;
+  }
+  const audioPart = S.customRecitationFile
+    ? `✅ ${S.customRecitationAudioName || S.customRecitationFile.name} — ${fmt(S.customRecitationDuration || 0)}`
+    : "⚠️ لم يتم اختيار ملف صوتي بعد";
+  const timingPart = S.customTimings?.length ? ` | ${S.customTimings.length} توقيت` : " | حمّل الآيات لإنشاء الجدول";
+  status.textContent = audioPart + timingPart;
+}
+
+function renderCustomTimingTable() {
+  const wrap = $("custom-timing-table-wrap");
+  if (!wrap) return;
+  if (!isCustomRecitationEnabled()) {
+    wrap.style.display = "none";
+    wrap.innerHTML = "";
+    return;
+  }
+  wrap.style.display = "block";
+  if (!S.verses.length) {
+    wrap.innerHTML = `<span class="note">حمّل الآيات أولاً لإنشاء جدول التوقيت.</span>`;
+    return;
+  }
+  syncCustomTimingsToVerses(false);
+  wrap.innerHTML = `
+    <div style="display:grid;gap:5px">
+      ${S.customTimings.map((row, i) => `
+        <div class="custom-timing-row" style="display:grid;grid-template-columns:54px 1fr 70px 70px 36px;gap:5px;align-items:center;background:var(--bg3);border:1px solid var(--b1);border-radius:var(--r);padding:5px">
+          <div style="font-size:10px;color:var(--gold);font-weight:700">${escapeHtml(row.label)}</div>
+          <div style="font-size:9px;color:var(--t2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(row.text)}</div>
+          <input type="number" class="fc custom-timing-input" data-i="${i}" data-k="start" min="0" step="0.1" value="${row.start}">
+          <input type="number" class="fc custom-timing-input" data-i="${i}" data-k="end" min="0" step="0.1" value="${row.end}">
+          <button class="btn btn-g bsm custom-timing-preview" data-i="${i}" title="معاينة">▶</button>
+        </div>
+      `).join("")}
+    </div>
+  `;
+  wrap.querySelectorAll(".custom-timing-input").forEach(inp => {
+    inp.addEventListener("input", e => {
+      const idx = parseInt(e.target.dataset.i);
+      const key = e.target.dataset.k;
+      if (!S.customTimings[idx]) return;
+      S.customTimings[idx][key] = clampTime(e.target.value);
+      persistCustomTimings();
+      setCustomStateForTime(S.customPlaybackTime || 0);
+      updateAyaUI();
+      updateCustomRecitationStatus();
+    });
+  });
+  wrap.querySelectorAll(".custom-timing-preview").forEach(btn => {
+    btn.addEventListener("click", () => previewCustomTimingSegment(parseInt(btn.dataset.i)));
+  });
+}
+
+function renderCustomRecitationUI() {
+  const enabled = isCustomRecitationEnabled();
+  const controls = $("custom-recitation-controls");
+  if (controls) controls.style.display = enabled ? "block" : "none";
+  const mode = $("custom-timing-mode");
+  if (mode && S.customTimingMode) mode.value = S.customTimingMode;
+  renderCustomTimingTable();
+  updateCustomRecitationStatus();
+}
+
+async function loadCustomRecitationFile(input) {
+  const file = input?.files?.[0];
+  if (!file) return;
+  if (file.type && !file.type.startsWith("audio/")) {
+    toast("⚠️ اختر ملف صوتي صالح", "error");
+    return;
+  }
+  stopRecitationAudio();
+  if (S.customRecitationUrl) URL.revokeObjectURL(S.customRecitationUrl);
+  S.customRecitationFile = file;
+  S.customRecitationAudioName = file.name;
+  S.customRecitationUrl = URL.createObjectURL(file);
+  S.customRecitationDuration = 0;
+
+  const a = new Audio();
+  a.preload = "metadata";
+  await new Promise((resolve, reject) => {
+    a.onloadedmetadata = resolve;
+    a.onerror = reject;
+    a.src = S.customRecitationUrl;
+  }).catch(() => null);
+  if (Number.isFinite(a.duration) && a.duration > 0) S.customRecitationDuration = a.duration;
+
+  if ((gv("custom-timing-mode") || "equal") === "equal" || !S.customTimings.length) {
+    generateEqualCustomTimings(false);
+  } else {
+    syncCustomTimingsToVerses(true);
+  }
+  renderCustomRecitationUI();
+  toast("✅ تم اختيار ملف التلاوة المخصص", "success");
+}
+
+async function loadCustomRecitationBuffer(ctx) {
+  if (!S.customRecitationFile) throw new Error("missing custom recitation file");
+  const ab = await S.customRecitationFile.arrayBuffer();
+  const buf = await ctx.decodeAudioData(ab.slice(0));
+  S.customRecitationDuration = buf.duration || S.customRecitationDuration;
+  return buf;
+}
+
+function stopCustomPreviewAudio() {
+  if (S.customPreviewAudio) {
+    try { S.customPreviewAudio.pause(); } catch (_) {}
+    S.customPreviewAudio = null;
+  }
+}
+
+function previewCustomTimingSegment(i) {
+  const row = S.customTimings?.[i];
+  if (!row || !S.customRecitationUrl) {
+    toast("⚠️ اختر ملف التلاوة أولاً", "error");
+    return;
+  }
+  stopCustomPreviewAudio();
+  const a = new Audio(S.customRecitationUrl);
+  S.customPreviewAudio = a;
+  a.volume = gv("rec-vol") / 100;
+  a.currentTime = row.start;
+  const stopAtEnd = () => {
+    if (!S.customPreviewAudio || S.customPreviewAudio !== a) return;
+    if (a.currentTime >= row.end) stopCustomPreviewAudio();
+  };
+  a.addEventListener("timeupdate", stopAtEnd);
+  a.play().catch(() => toast("⚠️ تعذر تشغيل المعاينة", "error"));
 }
 
 const BUILT_IN_FONTS = [
@@ -126,6 +434,9 @@ const S = {
   bgMotionT: 0,
   audioCtx: null, analyser: null, exportDest: null,
   recAudioEl: null, recAudioSource: null, recGainNode: null, recExportGain: null,
+  customRecitationFile: null, customRecitationUrl: null, customRecitationDuration: 0,
+  customRecitationAudioName: "", customTimingMode: "equal", customTimings: [], customPreviewAudio: null,
+  customPlaybackTime: 0,
   logoVid: null,
   bgAudioEl: null, bgAudioSource: null, bgPreviewGain: null,
   waveData: new Uint8Array(64).fill(0),
@@ -189,11 +500,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   initMobileLayout();
   initPwaInstall();
   initEventListeners();
+  restoreCustomTimings();
 
   // ⚠️ الترتيب مهم: نستعيد الإعدادات بعد تسجيل المستمعين فقط
   //   حتى تصل أحداث change/input إلى onBgTypeChange/onFmtChange/إلخ
   //   فتنعكس قيم الراديو على ظهور/إخفاء اللوحات الفرعية في الواجهة
   restoreAllSettings();
+  renderCustomRecitationUI();
   restoreLogo();
   restoreMixedAnimsOrder();
   initAutoSave();
@@ -238,6 +551,26 @@ function initEventListeners() {
     if (S.playing) pausePlayer();
     if (S.verses.length) loadVerses();
   });
+
+  const customRecitationEnabled = $("custom-recitation-enabled");
+  if (customRecitationEnabled) customRecitationEnabled.addEventListener("change", () => {
+    if (S.playing) pausePlayer();
+    if (S.verses.length) loadVerses();
+    renderCustomRecitationUI();
+  });
+
+  const customRecitationFile = $("custom-recitation-file");
+  if (customRecitationFile) customRecitationFile.addEventListener("change", e => loadCustomRecitationFile(e.target));
+
+  const customTimingMode = $("custom-timing-mode");
+  if (customTimingMode) customTimingMode.addEventListener("change", e => {
+    S.customTimingMode = e.target.value || "equal";
+    persistCustomTimings();
+    renderCustomRecitationUI();
+  });
+
+  const customTimingGenerateBtn = $("custom-timing-generate-btn");
+  if (customTimingGenerateBtn) customTimingGenerateBtn.addEventListener("click", () => generateEqualCustomTimings(true));
 
   const toggleAddReciterBtn = $("toggle-add-reciter-btn");
   if (toggleAddReciterBtn) toggleAddReciterBtn.addEventListener("click", toggleAddReciter);
@@ -625,6 +958,18 @@ function getEffectiveDur(i) {
 
 function checkAyaAdvance() {
   if (S.exporting) return;
+  if (isCustomRecitationEnabled()) {
+    const t = S.recAudioEl ? S.recAudioEl.currentTime : S.elapsed;
+    const oldAya = S.currentAya;
+    setCustomStateForTime(t);
+    if (oldAya !== S.currentAya) updateAyaUI();
+    const total = getSequenceDuration();
+    if (total && t >= total - 0.02) {
+      pausePlayer();
+      seekCustomToTime(0);
+    }
+    return;
+  }
   const dur = getEffectiveDur(S.currentAya);
   if (S.elapsed >= dur) {
     if (S.currentAya < S.verses.length - 1) {
@@ -2118,8 +2463,61 @@ async function resumeAudioCtx() {
 
 let _recGen = 0;
 
+async function playCustomRecitationAudio() {
+  stopRecitationAudio();
+  if (!S.playing) return;
+  const valid = validateCustomRecitation(true);
+  if (!valid.ok) {
+    toast(valid.message, "error");
+    pausePlayer();
+    return;
+  }
+  const myGen = ++_recGen;
+  $("audio-status").textContent = `▶️ تلاوة مخصصة — ${S.customRecitationAudioName || "ملف صوتي"}`;
+  try {
+    const ctx = await resumeAudioCtx();
+    if (myGen !== _recGen) return;
+    const a = new Audio(S.customRecitationUrl);
+    a.preload = "auto";
+    a.volume = gv("rec-vol") / 100;
+    const startAt = clampTime(S.customPlaybackTime || 0, getSequenceDuration() || S.customRecitationDuration || Infinity);
+    try { a.currentTime = startAt; } catch (_) {}
+    a.onloadedmetadata = () => { try { a.currentTime = startAt; } catch (_) {} };
+    a.onended = () => {
+      if (myGen !== _recGen) return;
+      pausePlayer();
+      seekCustomToTime(0);
+    };
+    a.onerror = () => {
+      if (myGen !== _recGen) return;
+      toast("❌ تعذر تشغيل ملف التلاوة المخصص", "error");
+      pausePlayer();
+    };
+    try {
+      const source = ctx.createMediaElementSource(a);
+      const gainNode = ctx.createGain();
+      gainNode.gain.value = gv("rec-vol") / 100;
+      source.connect(gainNode);
+      gainNode.connect(ctx.destination);
+      gainNode.connect(S.analyser);
+      S.recAudioSource = source;
+      S.recGainNode = gainNode;
+    } catch (_) {}
+    S.recAudioEl = a;
+    await a.play();
+  } catch (err) {
+    console.warn("Custom recitation playback failed:", err);
+    toast("❌ تعذر تشغيل ملف التلاوة المخصص", "error");
+    pausePlayer();
+  }
+}
+
 async function playRecitationAudio() {
   if (S.exporting) return;
+  if (isCustomRecitationEnabled()) {
+    await playCustomRecitationAudio();
+    return;
+  }
   stopRecitationAudio();
   if (!S.verses.length || !S.playing) return;
   const aya = S.verses[S.currentAya];
@@ -2205,8 +2603,10 @@ async function playRecitationAudio() {
 }
 
 function stopRecitationAudio() {
+  stopCustomPreviewAudio();
   if (S.recAudioSource) {
     try { S.recAudioSource.onended = null; S.recAudioSource.stop(); } catch (e) { }
+    try { S.recAudioSource.disconnect(); } catch (e) { }
     S.recAudioSource = null;
   }
   if (S.recGainNode) {
@@ -2744,6 +3144,10 @@ function togglePlay() {
 
 function startPlayer() {
   if (!S.verses.length) { toast("⚠️ لا توجد آيات مُحمَّلة", "error"); return; }
+  if (isCustomRecitationEnabled()) {
+    const valid = validateCustomRecitation(true);
+    if (!valid.ok) { toast(valid.message, "error"); return; }
+  }
   S.playing = true;
   $("btn-play").textContent = "⏸️";
   resumeAudioCtx().catch(console.warn);
@@ -2755,6 +3159,7 @@ function startPlayer() {
 function pausePlayer() {
   S.playing = false;
   $("btn-play").textContent = "▶️";
+  if (isCustomRecitationEnabled() && S.recAudioEl) setCustomStateForTime(S.recAudioEl.currentTime);
   stopRecitationAudio();
   if (S.bgAudioEl) S.bgAudioEl.pause();
   // إعادة فيديو الخلفية للبداية تحضيراً للتصدير
@@ -2764,12 +3169,29 @@ function pausePlayer() {
   }
 }
 
-function prevAya() { if (S.currentAya > 0) { S.currentAya--; S.elapsed = 0; updateAyaUI(); if (S.playing) playRecitationAudio(); } }
-function nextAya() { if (S.currentAya < S.verses.length - 1) { S.currentAya++; S.elapsed = 0; updateAyaUI(); if (S.playing) playRecitationAudio(); } }
+function prevAya() {
+  if (isCustomRecitationEnabled()) {
+    seekCustomToIndex((S.currentAya < 0 ? 1 : S.currentAya) - 1);
+    return;
+  }
+  if (S.currentAya > 0) { S.currentAya--; S.elapsed = 0; updateAyaUI(); if (S.playing) playRecitationAudio(); }
+}
+
+function nextAya() {
+  if (isCustomRecitationEnabled()) {
+    seekCustomToIndex(S.currentAya + 1);
+    return;
+  }
+  if (S.currentAya < S.verses.length - 1) { S.currentAya++; S.elapsed = 0; updateAyaUI(); if (S.playing) playRecitationAudio(); }
+}
 
 function seekClick(e) {
   const bar = $("pbar"), ratio = e.offsetX / bar.offsetWidth;
   const total = getSequenceDuration() || 1;
+  if (isCustomRecitationEnabled()) {
+    seekCustomToTime(ratio * total);
+    return;
+  }
   let acc = 0;
   for (let i = 0; i < S.verses.length; i++) {
     const d = getEffectiveDur(i);
@@ -2782,6 +3204,13 @@ function seekClick(e) {
 
 function updateProgressUI() {
   const totalDur = getSequenceDuration() || 1;
+  if (isCustomRecitationEnabled()) {
+    const passed = clampTime(S.recAudioEl ? S.recAudioEl.currentTime : S.customPlaybackTime, totalDur);
+    const pct = Math.min(100, (passed / totalDur) * 100);
+    $("pfill").style.width = pct + "%";
+    $("ptime").textContent = `${fmt(passed)} / ${fmt(totalDur)}`;
+    return;
+  }
   let passed = 0;
   for (let i = 0; i < S.currentAya; i++) passed += getEffectiveDur(i);
   passed += S.elapsed;
@@ -2792,6 +3221,10 @@ function updateProgressUI() {
 
 function updateAyaUI() {
   const aya = S.verses[S.currentAya];
+  if (!aya) {
+    $("aya-ind").textContent = isCustomRecitationEnabled() ? "خارج توقيت الآيات" : "—";
+    return;
+  }
   if (isBismillahSegment(aya)) {
     $("aya-ind").textContent = "البسملة";
     return;
@@ -2836,6 +3269,11 @@ async function fixWebmDuration(blob, durationSec) {
 
 async function startExport(type) {
   if (!S.verses.length) { toast("⚠️ لا توجد آيات", "error"); return; }
+  const customMode = isCustomRecitationEnabled();
+  if (customMode) {
+    const valid = validateCustomRecitation(true);
+    if (!valid.ok) { toast(valid.message, "error"); return; }
+  }
 
   S.exportCancel = false;
   S.exportChunks = [];
@@ -2857,69 +3295,94 @@ async function startExport(type) {
   const surahNum = parseInt($("surah-sel").value) || 1;
   const reciter = S.reciters.find(r => r.id === radioVal("reciter")) || S.reciters[0];
   const gainVal = gv("rec-vol") / 100;
-  let loaded = 0;
+  let audioBuffers = [];
+  let ayaStarts = [];
+  let totalDuration = 0;
+  let getAyaAt = (t) => {
+    let idx = S.verses.length - 1;
+    for (let i = 0; i < S.verses.length; i++) {
+      if (t < ayaStarts[i] + getDur(i) + getSegmentGap(i)) { idx = i; break; }
+    }
+    return idx;
+  };
 
-  const audioBuffers = await Promise.all(S.verses.map(async (aya, i) => {
-    const url = buildSegmentAudioUrl(aya, reciter, surahNum);
+  if (customMode) {
     try {
-      const res = await fetch(url, { cache: "force-cache" });
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      const ab = await res.arrayBuffer();
-      const buf = await ctx.decodeAudioData(ab);
-      loaded++;
-      $("rec-sub").textContent = `⏳ تحميل الصوت… ${loaded}/${S.verses.length}`;
-      return buf;
-    } catch (e1) {
+      $("rec-sub").textContent = "⏳ فك ترميز التلاوة المخصصة…";
+      const buf = await loadCustomRecitationBuffer(ctx);
+      audioBuffers = [buf];
+      ayaStarts = [0];
+      totalDuration = getSequenceDuration() || buf.duration;
+      getAyaAt = (t) => getCustomIndexFromTime(t);
+    } catch (err) {
+      console.warn("Custom export decode failed:", err);
+      S.exporting = false;
+      $("rec-ov").classList.remove("on");
+      toast("❌ تعذر قراءة ملف التلاوة المخصص", "error");
+      return;
+    }
+  } else {
+    let loaded = 0;
+    audioBuffers = await Promise.all(S.verses.map(async (aya, i) => {
+      const url = buildSegmentAudioUrl(aya, reciter, surahNum);
       try {
-        const res2 = await fetch(url, { cache: "no-store", mode: "cors" });
-        if (!res2.ok) throw new Error("HTTP " + res2.status);
-        const ab2 = await res2.arrayBuffer();
-        const buf2 = await ctx.decodeAudioData(ab2);
+        const res = await fetch(url, { cache: "force-cache" });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const ab = await res.arrayBuffer();
+        const buf = await ctx.decodeAudioData(ab);
         loaded++;
         $("rec-sub").textContent = `⏳ تحميل الصوت… ${loaded}/${S.verses.length}`;
-        return buf2;
-      } catch (e2) {
+        return buf;
+      } catch (e1) {
         try {
-          const dur = await new Promise((res, rej) => {
-            const a = new Audio();
-            a.crossOrigin = "anonymous";
-            a.onloadedmetadata = () => res(a.duration);
-            a.onerror = () => {
-              const a2 = new Audio(url);
-              a2.onloadedmetadata = () => res(a2.duration);
-              a2.onerror = () => rej(new Error("audio load failed"));
-              a2.load();
-            };
-            a.src = url;
-            a.load();
-            setTimeout(() => rej(new Error("timeout")), 8000);
-          });
-          if (dur > 0) S.ayaDurations[i] = dur;
-        } catch (_) {}
-        loaded++;
-        $("rec-sub").textContent = `⏳ تحميل الصوت… ${loaded}/${S.verses.length} ⚠️`;
-        return null;
+          const res2 = await fetch(url, { cache: "no-store", mode: "cors" });
+          if (!res2.ok) throw new Error("HTTP " + res2.status);
+          const ab2 = await res2.arrayBuffer();
+          const buf2 = await ctx.decodeAudioData(ab2);
+          loaded++;
+          $("rec-sub").textContent = `⏳ تحميل الصوت… ${loaded}/${S.verses.length}`;
+          return buf2;
+        } catch (e2) {
+          try {
+            const dur = await new Promise((res, rej) => {
+              const a = new Audio();
+              a.crossOrigin = "anonymous";
+              a.onloadedmetadata = () => res(a.duration);
+              a.onerror = () => {
+                const a2 = new Audio(url);
+                a2.onloadedmetadata = () => res(a2.duration);
+                a2.onerror = () => rej(new Error("audio load failed"));
+                a2.load();
+              };
+              a.src = url;
+              a.load();
+              setTimeout(() => rej(new Error("timeout")), 8000);
+            });
+            if (dur > 0) S.ayaDurations[i] = dur;
+          } catch (_) {}
+          loaded++;
+          $("rec-sub").textContent = `⏳ تحميل الصوت… ${loaded}/${S.verses.length} ⚠️`;
+          return null;
+        }
       }
+    }));
+
+    const loadedCount = audioBuffers.filter(b => b !== null).length;
+    if (loadedCount === 0) {
+      toast("⚠️ تعذر جلب الصوت عبر fetch — سيتم التصدير بالصوت الأساسي", "info");
     }
-  }));
 
-  const loadedCount = audioBuffers.filter(b => b !== null).length;
-  if (loadedCount === 0) {
-    toast("⚠️ تعذر جلب الصوت عبر fetch — سيتم التصدير بالصوت الأساسي", "info");
+    if (S.exportCancel) { $("rec-ov").classList.remove("on"); return; }
+
+    audioBuffers.forEach((buf, i) => { if (buf) S.ayaDurations[i] = buf.duration; });
+
+    let acc = 0;
+    for (let i = 0; i < S.verses.length; i++) {
+      ayaStarts.push(acc);
+      acc += getDur(i) + getSegmentGap(i);
+    }
+    totalDuration = acc;
   }
-
-  if (S.exportCancel) { $("rec-ov").classList.remove("on"); return; }
-
-  audioBuffers.forEach((buf, i) => { if (buf) S.ayaDurations[i] = buf.duration; });
-
-  // فاصل الصمت يُضاف بعد كل آية (يدخل في ayaStarts التراكمية)
-  const ayaStarts = [];
-  let acc = 0;
-  for (let i = 0; i < S.verses.length; i++) {
-    ayaStarts.push(acc);
-    acc += getDur(i) + getSegmentGap(i);
-  }
-  const totalDuration = acc;
   const FPS = parseInt(gv("export-fps") || "30") || 30;
   const FRAME_MS = 1000 / FPS;
   const totalFrames = Math.ceil(totalDuration * FPS);
@@ -3019,16 +3482,9 @@ async function startExport(type) {
 
   const savedAya = S.currentAya;
   const savedElapsed = S.elapsed;
+  const savedCustomTime = S.customPlaybackTime;
   const savedPlaying = S.playing;
   S.playing = true;
-
-  const getAyaAt = (t) => {
-    let idx = S.verses.length - 1;
-    for (let i = 0; i < S.verses.length; i++) {
-      if (t < ayaStarts[i] + getDur(i) + getSegmentGap(i)) { idx = i; break; }
-    }
-    return idx;
-  };
 
   let exportTimer = null;
   let lastDrawnFrame = -1;
@@ -3052,16 +3508,17 @@ async function startExport(type) {
       const t = targetFrame / FPS;
       const ci = getAyaAt(Math.min(t, totalDuration - 0.001));
       S.currentAya = ci;
-      S.elapsed = Math.max(0, t - ayaStarts[ci]);
+      S.elapsed = customMode
+        ? (ci >= 0 ? Math.max(0, t - S.customTimings[ci].start) : t)
+        : Math.max(0, t - ayaStarts[ci]);
+      if (customMode) S.customPlaybackTime = t;
       drawFrame(t);
       lastDrawnFrame = targetFrame;
 
       const pct = Math.min(99, Math.round((projectTime / totalDuration) * 100));
       $("rec-fill").style.width = pct + "%";
       $("rec-pct").textContent = pct + "%";
-      const label = isBismillahSegment(S.verses[ci])
-        ? "البسملة"
-        : `الآية ${getAyahOrdinal(ci)}/${getAyahTotal()}`;
+      const label = getPlaybackLabel(ci);
       $("rec-sub").textContent =
       `🎬 ${targetFrame}/${totalFrames} — ${label} — ${fmt(projectTime)} / ${fmt(totalDuration)}`;
       updateAyaUI();
@@ -3089,6 +3546,7 @@ async function startExport(type) {
     S.playing = savedPlaying;
     S.currentAya = savedAya;
     S.elapsed = savedElapsed;
+    S.customPlaybackTime = savedCustomTime;
     $("rec-ov").classList.remove("on");
     updateAyaUI();
   }
@@ -3500,12 +3958,18 @@ async function loadVerses() {
   S.verses = addBismillah ? [makeBismillahSegment(), ...verses] : verses;
   S.currentAya = 0;
   S.elapsed = 0;
+  S.customPlaybackTime = 0;
   S.ayaDurations = addBismillah ? [BISMILLAH_FALLBACK_DUR] : [];
+  if (isCustomRecitationEnabled()) {
+    syncCustomTimingsToVerses(true);
+    setCustomStateForTime(0);
+  }
   const bismillahNote = ge("bismillah-intro") && surahNum === 9
     ? " — تُخطيت البسملة لسورة التوبة"
     : (addBismillah ? " + البسملة" : "");
   $("aya-info").textContent = `✅ ${verses.length} آية من سورة ${surah?.name || ""} ${source}${bismillahNote}`;
   updateAyaUI();
+  renderCustomRecitationUI();
   await loadTranslations();
 }
 
@@ -3748,6 +4212,9 @@ function captureState() {
     surah: $("surah-sel").value, from: $("from-aya").value, to: $("to-aya").value,
     reciter: radioVal("reciter"), fmt: radioVal("fmt"),
     bismillahIntro: ge("bismillah-intro"),
+    customRecitationEnabled: ge("custom-recitation-enabled"),
+    customTimingMode: gv("custom-timing-mode") || "equal",
+    customTimings: S.customTimings || [],
     gc1: $("gc1").value, gc2: $("gc2").value,
     font: radioVal("font"), txtCol: $("txt-col").value,
     wm: $("wm-text").value, orn: radioVal("orn"),
@@ -3760,6 +4227,9 @@ function applyState(st) {
   setV("surah-sel", st.surah); setV("from-aya", st.from); setV("to-aya", st.to);
   setR("reciter", st.reciter); setR("fmt", st.fmt); setR("orn", st.orn);
   if ($("bismillah-intro") && typeof st.bismillahIntro === "boolean") $("bismillah-intro").checked = st.bismillahIntro;
+  if ($("custom-recitation-enabled") && typeof st.customRecitationEnabled === "boolean") $("custom-recitation-enabled").checked = st.customRecitationEnabled;
+  if ($("custom-timing-mode")) $("custom-timing-mode").value = st.customTimingMode || "equal";
+  if (Array.isArray(st.customTimings)) S.customTimings = st.customTimings;
   setCol("gc1", st.gc1); setCol("gc2", st.gc2);
   if ($("gc1t")) $("gc1t").value = st.gc1 || ""; if ($("gc2t")) $("gc2t").value = st.gc2 || "";
   setCol("txt-col", st.txtCol);
@@ -3768,6 +4238,7 @@ function applyState(st) {
   if (st.fxGold) ge_el("fx-gold").checked = true;
   if (st.fxStars) ge_el("fx-stars").checked = true;
   document.querySelectorAll(".tc-chip").forEach(c => c.classList.toggle("on", c.dataset.t === st.theme));
+  renderCustomRecitationUI();
   loadVerses(); onFmtChange();
 }
 
@@ -3911,6 +4382,7 @@ const SETTINGS_SKIP = new Set([
   "verse-search-inp","surah-search","preset-sel",
   "bg-img-input","bg-vid-input","ytdlp-url","custom-fonts-input",
   "bg-audio-input","ar-name","ar-flag","ar-folder",
+  "custom-recitation-file",
   "dl-start-m","dl-start-s","dl-end-m","dl-end-s",
   "dl-save-path",
   "batch-surah","batch-from","batch-to",
@@ -3926,15 +4398,18 @@ function saveAllSettings() {
     else if (el.type === "radio") { if (el.checked) saved["__radio_" + el.name] = el.value; }
     else saved[el.id] = el.value;
   });
-    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch(e) {}
+  saved.__customTimings = S.customTimings || [];
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch(e) {}
 }
 
 function restoreAllSettings() {
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}"); } catch(e) {}
   if (!Object.keys(saved).length) return;
+  if (Array.isArray(saved.__customTimings)) S.customTimings = saved.__customTimings;
 
   Object.entries(saved).forEach(([key, val]) => {
+    if (key === "__customTimings") return;
     if (key.startsWith("__radio_")) {
       const name = key.replace("__radio_", "");
       const radio = document.querySelector(`input[name="${name}"][value="${val}"]`);
@@ -3992,6 +4467,7 @@ function resetAllSettings() {
   if (!confirm("⚠️ سيتم إعادة جميع الإعدادات للافتراضي — هل تريد المتابعة؟")) return;
   localStorage.removeItem(SETTINGS_KEY);
   localStorage.removeItem(RECITERS_KEY);
+  localStorage.removeItem(CUSTOM_TIMINGS_KEY);
   // امسح كاش القرآن والترجمات لإجبار التحميل المُحدَّث
   localStorage.removeItem(QURAN_INDEX_KEY);
   localStorage.removeItem(SURAHS_KEY);
@@ -4477,6 +4953,11 @@ async function startExportDesktop(codecKey) {
   }
   if (!S.verses.length) { toast("⚠️ لا توجد آيات", "error"); return; }
   if (S.exporting)      { toast("⚠️ تصدير جارٍ بالفعل", "info"); return; }
+  const customMode = isCustomRecitationEnabled();
+  if (customMode) {
+    const valid = validateCustomRecitation(true);
+    if (!valid.ok) { toast(valid.message, "error"); return; }
+  }
 
   const codecs = window.EXPORT_CODECS || {};
   const fmt    = codecs[codecKey] || codecs["mp4-h264"];
@@ -4510,34 +4991,50 @@ async function startExportDesktop(codecKey) {
   const reciter   = S.reciters.find(r => r.id === radioVal("reciter")) || S.reciters[0];
   const recGain   = gv("rec-vol") / 100;
 
-  let loaded = 0;
-  const audioBuffers = await Promise.all(S.verses.map(async (aya, i) => {
-    if (cancelRef.canceled) return null;
-    const url = buildSegmentAudioUrl(aya, reciter, surahNum);
+  let audioBuffers = [];
+  let ayaStarts = [];
+  let totalDuration = 0;
+
+  if (customMode) {
     try {
-      const res = await fetch(url, { cache: "force-cache" });
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      const ab  = await res.arrayBuffer();
-      const buf = await ctx.decodeAudioData(ab.slice(0));
-      S.ayaDurations[i] = buf.duration;
-      loaded++;
-      $("rec-sub").textContent = `⏳ تحميل الصوت… ${loaded}/${S.verses.length}`;
-      return buf;
-    } catch (_) {
-      loaded++;
-      $("rec-sub").textContent = `⏳ تحميل الصوت… ${loaded}/${S.verses.length} ⚠️`;
-      return null;
+      $("rec-sub").textContent = "⏳ فك ترميز التلاوة المخصصة…";
+      const buf = await loadCustomRecitationBuffer(ctx);
+      audioBuffers = [buf];
+      ayaStarts = [0];
+      totalDuration = getSequenceDuration() || buf.duration;
+    } catch (err) {
+      console.warn("Custom desktop export decode failed:", err);
+      _finishExportUi();
+      toast("❌ تعذر قراءة ملف التلاوة المخصص", "error");
+      return;
     }
-  }));
+  } else {
+    let loaded = 0;
+    audioBuffers = await Promise.all(S.verses.map(async (aya, i) => {
+      if (cancelRef.canceled) return null;
+      const url = buildSegmentAudioUrl(aya, reciter, surahNum);
+      try {
+        const res = await fetch(url, { cache: "force-cache" });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const ab  = await res.arrayBuffer();
+        const buf = await ctx.decodeAudioData(ab.slice(0));
+        S.ayaDurations[i] = buf.duration;
+        loaded++;
+        $("rec-sub").textContent = `⏳ تحميل الصوت… ${loaded}/${S.verses.length}`;
+        return buf;
+      } catch (_) {
+        loaded++;
+        $("rec-sub").textContent = `⏳ تحميل الصوت… ${loaded}/${S.verses.length} ⚠️`;
+        return null;
+      }
+    }));
 
-  if (cancelRef.canceled) { _finishExportUi(); return; }
+    if (cancelRef.canceled) { _finishExportUi(); return; }
 
-  // ── حساب البداية الزمنية لكل آية والمدة الكلية ─────
-  // فاصل صمت يُحشر بعد كل آية ضمن الخانة الزمنية
-  const ayaStarts = [];
-  let acc = 0;
-  for (let i = 0; i < S.verses.length; i++) { ayaStarts.push(acc); acc += getDur(i) + getSegmentGap(i); }
-  const totalDuration = acc;
+    let acc = 0;
+    for (let i = 0; i < S.verses.length; i++) { ayaStarts.push(acc); acc += getDur(i) + getSegmentGap(i); }
+    totalDuration = acc;
+  }
   if (totalDuration < 0.5) {
     _finishExportUi();
     toast("⚠️ المدة قصيرة جداً", "error");
@@ -4576,6 +5073,7 @@ async function startExportDesktop(codecKey) {
 
   // ── دالة استنتاج الآية الحالية من الزمن (تشمل فاصل الصمت) ──
   const getAyaAt = (t) => {
+    if (customMode) return getCustomIndexFromTime(t);
     for (let i = 0; i < S.verses.length; i++) {
       if (t < ayaStarts[i] + getDur(i) + getSegmentGap(i)) return i;
     }
@@ -4583,9 +5081,17 @@ async function startExportDesktop(codecKey) {
   };
   const savedAya       = S.currentAya;
   const savedElapsed   = S.elapsed;
+  const savedCustomTime = S.customPlaybackTime;
   const savedBgMotionT = S.bgMotionT;
   const setStateForTime = (t) => {
     const idx = getAyaAt(Math.min(t, totalDuration - 1e-4));
+    if (customMode) {
+      S.currentAya = idx;
+      S.elapsed    = idx >= 0 ? Math.max(0, t - S.customTimings[idx].start) : t;
+      S.customPlaybackTime = t;
+      S.bgMotionT  = t;
+      return;
+    }
     S.currentAya = idx;
     S.elapsed    = Math.max(0, t - ayaStarts[idx]);
     S.bgMotionT  = t;  // مزامنة حركة الخلفية مع الزمن الحتمي للإطار
@@ -4667,6 +5173,7 @@ async function startExportDesktop(codecKey) {
     window.SQRM.offFfmpegProgress?.();
     S.currentAya       = savedAya;
     S.elapsed          = savedElapsed;
+    S.customPlaybackTime = savedCustomTime;
     S.bgMotionT        = savedBgMotionT;
     S._exportBgFrameImg = null;
     updateAyaUI();
