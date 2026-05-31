@@ -2825,18 +2825,20 @@ function applyBgVidTrim() {
   }
   // ربط مراقب يعيد للبداية عند تجاوز end
   if (!S.bgVid._trimHandler) {
-    S.bgVid._trimHandler = () => {
+    const vid = S.bgVid;
+    vid._trimHandler = () => {
+      if (vid !== S.bgVid) return;
       const tt = getBgVidTrim();
       if (!tt) return;
-      if (S.bgVid.currentTime >= tt.end - 0.05) {
+      if (vid.currentTime >= tt.end - 0.05) {
         if (shouldUseSingleBgCrossfade() && S.bgVidNext && S.bgVidLoopSwapReady) {
           switchToNextBgVid();
         } else {
-          try { S.bgVid.currentTime = tt.start; } catch (_) {}
+          try { vid.currentTime = tt.start; } catch (_) {}
         }
       }
     };
-    S.bgVid.addEventListener("timeupdate", S.bgVid._trimHandler);
+    vid.addEventListener("timeupdate", vid._trimHandler);
   }
 }
 
@@ -2925,7 +2927,10 @@ function createBgVideoElement(url) {
   vid.muted = true;
   vid.playsInline = true;
   vid.preload = "auto";
-  vid.addEventListener("ended", () => switchToNextBgVid());
+  vid.loop = false;
+  vid.addEventListener("ended", () => {
+    if (vid === S.bgVid) switchToNextBgVid();
+  });
   return vid;
 }
 
@@ -3086,7 +3091,8 @@ function updateBgVidCrossfade() {
       return;
     }
     const remaining = bounds.end - cur.currentTime;
-    if (remaining <= 0.03 && S.bgVidNext && S.bgVidLoopSwapReady) {
+    const swapLead = Math.min(0.12, Math.max(0.04, xfSingle * 0.1));
+    if (remaining <= swapLead && S.bgVidNext && S.bgVidLoopSwapReady) {
       switchToNextBgVid();
       return;
     }
