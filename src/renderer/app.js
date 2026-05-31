@@ -2930,15 +2930,19 @@ function createBgVideoElement(url) {
 }
 
 function addBgVidItem(file) {
-  const url = URL.createObjectURL(file);
+  addBgVidItemFromSource(file, URL.createObjectURL(file), file.name, true);
+}
+
+function addBgVidItemFromSource(file, url, name, shouldRevokeUrl = true) {
   const vid = createBgVideoElement(url);
   const loopVid = createBgVideoElement(url);
   loopVid.load();
   vid.onloadeddata = () => {
     const item = {
-      file, vid, name: file.name,
+      file, vid, name: name || file.name || "background-video",
       dur: isFinite(vid.duration) ? vid.duration : 0,
       url,
+      shouldRevokeUrl,
       loopVid,
       audioEnabled: false,   // الصوت معطّل افتراضياً
       audioGain: 0.5,
@@ -2962,7 +2966,7 @@ function addBgVidItem(file) {
       toast(`🎥 أُضيف المقطع (${S.bgVidItems.length} مجموع)`, "success", 2000);
     }
   };
-  vid.onerror = () => toast(`❌ فشل تحميل ${file.name}`, "error");
+  vid.onerror = () => toast(`❌ فشل تحميل ${name || file.name || "background-video"}`, "error");
   vid.load();
 }
 
@@ -3148,7 +3152,7 @@ function removeBgVidItem(idx) {
   try {
     item.vid.pause();
     if (item.loopVid) item.loopVid.pause();
-    URL.revokeObjectURL(item.url);
+    if (item.shouldRevokeUrl !== false) URL.revokeObjectURL(item.url);
   } catch (_) {}
   S.bgVidItems.splice(idx, 1);
   // تأثير فوري: فعّل الأول من الترتيب الجديد
@@ -3238,7 +3242,7 @@ function renderBgVidList() {
   if (!el) return;
   if (!S.bgVidItems.length) { el.innerHTML = ""; return; }
   el.innerHTML = S.bgVidItems.map((it, i) => {
-    const sz = (it.file.size / 1e6).toFixed(1);
+    const sz = it.file.size ? (it.file.size / 1e6).toFixed(1) : "؟";
     const dur = it.dur ? it.dur.toFixed(1) + "ث" : "—";
     const audioOn = it.audioEnabled;
     const volPct = Math.round((it.audioGain || 0) * 100);
@@ -4979,14 +4983,20 @@ async function runUnifiedDownload() {
 //  تطبيق الوسيط المحمّل على المشروع
 // ══════════════════════════════════════════════════════
 async function applyDownloadedMedia(filePath, type, srcUrl) {
-  const fileUrl = "file://" + filePath;
+  const fileUrl = pathToFileUrl(filePath);
   if (type === "video") {
-    if (S.bgVid) { try { S.bgVid.pause(); } catch(_){} S.bgVid = null; }
-    const vid = document.createElement("video");
-    vid.src = fileUrl; vid.loop = true; vid.muted = true; vid.playsInline = true;
-    vid.currentTime = 0;
-    // لا تشغيل تلقائي — يبدأ عند الضغط على تشغيل
-    S.bgVid = vid;
+    clearBgVideoPlaylist();
+    const name = filePath.split(/[\\/]/).pop() || "downloaded-video";
+    const downloadedFile = {
+      name,
+      size: 0,
+      arrayBuffer: async () => {
+        const buf = await window.SQRM.readTmpFile(filePath);
+        if (!buf) throw new Error("تعذر قراءة ملف الخلفية المحمّل");
+        return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+      },
+    };
+    addBgVidItemFromSource(downloadedFile, fileUrl, name, false);
     const vBtn = document.querySelector('input[name="bgt"][value="video"]');
     if (vBtn) { vBtn.checked = true; onBgTypeChange(); }
     toast("✅ الفيديو جاهز كخلفية — اضغط ▶️ للبدء", "success");
@@ -5011,6 +5021,39 @@ async function applyDownloadedMedia(filePath, type, srcUrl) {
     toast("✅ الصورة جاهزة كخلفية", "success");
   }
 }
+
+function pathToFileUrl(filePath) {
+  const normalized = String(filePath || "").replace(/\\/g, "/");
+  if (/^[A-Za-z]:\//.test(normalized)) return "file:///" + encodeURI(normalized);
+  return "file://" + encodeURI(normalized);
+}
+
+function clearBgVideoPlaylist() {
+  const listedVideos = new Set();
+  S.bgVidItems.forEach(item => {
+    listedVideos.add(item.vid);
+    listedVideos.add(item.loopVid);
+    try {
+      item.vid?.pause();
+      item.loopVid?.pause();
+      if (item.shouldRevokeUrl !== false) URL.revokeObjectURL(item.url);
+    } catch (_) {}
+  });
+  if (S.bgVid && !listedVideos.has(S.bgVid)) {
+    try {
+      S.bgVid.pause();
+      S.bgVid.src = "";
+    } catch (_) {}
+  }
+  resetBgVidCrossfadeState();
+  S.bgVidItems = [];
+  S.bgVid = null;
+  S.bgVidFile = null;
+  S.bgVidActiveIdx = 0;
+  const list = $("bg-vid-list");
+  if (list) list.innerHTML = "";
+}
+window.applyDownloadedMedia = applyDownloadedMedia;
 
 // ══════════════════════════════════════════════════════
 //  تحميل رابط مباشر (wget / aria2c)

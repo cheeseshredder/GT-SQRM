@@ -65,8 +65,13 @@ async function runYtdlpDownload() {
 
 // ── تطبيق الملف المحمّل كخلفية ────────────────────────
 function applyDownloadedBackground(filePath, type) {
+  if (typeof window.applyDownloadedMedia === "function") {
+    window.applyDownloadedMedia(filePath, type);
+    return;
+  }
   // نحوّل مسار الملف إلى file:// URL
-  const fileUrl = "file://" + filePath;
+  const normalized = String(filePath || "").replace(/\\/g, "/");
+  const fileUrl = /^[A-Za-z]:\//.test(normalized) ? "file:///" + encodeURI(normalized) : "file://" + encodeURI(normalized);
 
   if (type === "video") {
     // تطبيق كخلفية فيديو — نفس منطق GT-SQR
