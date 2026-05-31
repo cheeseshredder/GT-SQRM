@@ -564,9 +564,21 @@ body.offline .offline-badge{display:block}
                 <option value="manual">توقيت يدوي</option>
               </select>
             </div>
+            <div class="fg">
+              <label class="fl">وضع البسملة مع التسجيل المخصص</label>
+              <select class="fc" id="custom-bismillah-mode">
+                <option value="none">لا تضف بسملة منفصلة</option>
+                <option value="text">بسملة نصية فقط</option>
+                <option value="reciter-audio">بسملة نصية + صوت القارئ المحدد</option>
+              </select>
+            </div>
+            <div class="fg" id="custom-bismillah-duration-row" style="display:none">
+              <label class="fl">مدة البسملة النصية (ثانية)</label>
+              <input type="number" class="fc" id="custom-bismillah-text-duration" min="0.5" step="0.1" value="2.5">
+            </div>
             <button class="btn btn-p bsm bfw" id="custom-timing-generate-btn">إنشاء / تحديث جدول التوقيت</button>
             <span class="note" id="custom-recitation-status" style="display:block;margin-top:5px"></span>
-            <span class="note" style="display:block;margin-top:2px">عند استخدام تسجيل مخصص لا تُضاف البسملة تلقائياً؛ افترض أن الملف يحتويها إن أردتها. يجب اختيار الملف من جديد بعد إعادة فتح التطبيق.</span>
+            <span class="note" style="display:block;margin-top:2px">يمكن عرض البسملة كنص فقط أو بصوت القارئ المحدد من EveryAyah قبل التسجيل. يجب اختيار الملف من جديد بعد إعادة فتح التطبيق.</span>
             <div id="custom-timing-table-wrap" style="display:none;margin-top:7px"></div>
           </div>
         </div>

@@ -45,7 +45,8 @@ function makeBismillahSegment() {
 }
 
 function shouldInsertBismillah(surahNum) {
-  return !isCustomRecitationEnabled() && !!ge("bismillah-intro") && surahNum !== 9;
+  if (isCustomRecitationEnabled()) return shouldShowCustomBismillah(surahNum);
+  return !!ge("bismillah-intro") && surahNum !== 9;
 }
 
 function buildSegmentAudioUrl(aya, reciter, surahNum) {
@@ -75,7 +76,8 @@ function getSegmentFallbackDur(i, manualDur = parseFloat(gv("aya-dur")) || 6) {
 
 function getSegmentAudioDur(i, manualDur = parseFloat(gv("aya-dur")) || 6) {
   if (isCustomRecitationEnabled()) {
-    const row = S.customTimings[i];
+    if (isBismillahSegment(S.verses[i])) return getCustomBismillahDuration();
+    const row = getCustomTimingForVerseIndex(i);
     if (row && row.end > row.start) return row.end - row.start;
   }
   const audioDur = S.ayaDurations[i];
@@ -89,13 +91,73 @@ function getSegmentGap(i) {
 
 function getSequenceDuration() {
   if (isCustomRecitationEnabled()) {
-    return S.customRecitationDuration || Math.max(0, ...S.customTimings.map(r => r.end || 0));
+    return getCustomTotalDuration();
   }
   return S.verses.reduce((sum, _aya, i) => sum + getSegmentAudioDur(i) + getSegmentGap(i), 0);
 }
 
 function isCustomRecitationEnabled() {
   return !!ge("custom-recitation-enabled");
+}
+
+function getCustomBismillahMode() {
+  const mode = gv("custom-bismillah-mode") || "none";
+  return ["none", "text", "reciter-audio"].includes(mode) ? mode : "none";
+}
+
+function getCustomBismillahTextDuration() {
+  return Math.max(0.5, parseFloat(gv("custom-bismillah-text-duration")) || BISMILLAH_FALLBACK_DUR);
+}
+
+function shouldShowCustomBismillah(surahNum = getCurrentSurahNum()) {
+  return isCustomRecitationEnabled() && surahNum !== 9 && getCustomBismillahMode() !== "none";
+}
+
+function getCustomBismillahDuration() {
+  if (!shouldShowCustomBismillah()) return 0;
+  if (getCustomBismillahMode() === "reciter-audio") {
+    return S.customBismillahDuration || getCustomBismillahTextDuration();
+  }
+  return getCustomBismillahTextDuration();
+}
+
+function getCustomTimelineOffset() {
+  return shouldShowCustomBismillah() && getCustomBismillahMode() === "reciter-audio"
+    ? getCustomBismillahDuration()
+    : 0;
+}
+
+function getCustomAudioBaseDuration() {
+  const maxRowEnd = Math.max(0, ...(S.customTimings || []).map(r => parseFloat(r.end) || 0));
+  return Math.max(S.customRecitationDuration || 0, maxRowEnd);
+}
+
+function getCustomTotalDuration() {
+  const base = getCustomAudioBaseDuration();
+  if (!shouldShowCustomBismillah()) return base;
+  if (getCustomBismillahMode() === "reciter-audio") return getCustomTimelineOffset() + base;
+  return Math.max(base, getCustomBismillahDuration());
+}
+
+function customAudioTimeToTimelineTime(audioTime) {
+  return getCustomTimelineOffset() + Math.max(0, audioTime || 0);
+}
+
+function customTimelineTimeToAudioTime(timelineTime) {
+  return Math.max(0, (timelineTime || 0) - getCustomTimelineOffset());
+}
+
+function getCustomRowIndexForVerseIndex(verseIndex) {
+  return hasBismillahIntroSegment() ? verseIndex - 1 : verseIndex;
+}
+
+function getCustomVerseIndexForRowIndex(rowIndex) {
+  return hasBismillahIntroSegment() ? rowIndex + 1 : rowIndex;
+}
+
+function getCustomTimingForVerseIndex(verseIndex) {
+  const rowIndex = getCustomRowIndexForVerseIndex(verseIndex);
+  return rowIndex >= 0 ? S.customTimings[rowIndex] : null;
 }
 
 function getCurrentSurahNum() {
@@ -178,7 +240,11 @@ function generateEqualCustomTimings(showToast = true) {
   }
   const ayahs = S.verses.filter(aya => !isBismillahSegment(aya));
   if (!ayahs.length) return false;
-  const step = S.customRecitationDuration / ayahs.length;
+  const leadingTextDur = shouldShowCustomBismillah() && getCustomBismillahMode() === "text"
+    ? getCustomBismillahTextDuration()
+    : 0;
+  const startAt = S.customRecitationDuration > leadingTextDur ? leadingTextDur : 0;
+  const step = Math.max(0.1, (S.customRecitationDuration - startAt) / ayahs.length);
   const surahNum = getCurrentSurahNum();
   S.customTimings = ayahs.map((aya, i) => ({
     key: getCustomRowKey(aya, surahNum),
@@ -186,8 +252,8 @@ function generateEqualCustomTimings(showToast = true) {
     ayaNum: aya.numberInSurah,
     label: `${surahNum}:${aya.numberInSurah}`,
     text: aya.text,
-    start: Number((i * step).toFixed(3)),
-    end: Number(((i + 1) * step).toFixed(3))
+    start: Number((startAt + i * step).toFixed(3)),
+    end: Number((startAt + (i + 1) * step).toFixed(3))
   }));
   persistCustomTimings();
   setCustomStateForTime(S.customPlaybackTime || 0);
@@ -228,11 +294,24 @@ function getCustomIndexFromTime(t) {
   return -1;
 }
 
+function getCustomVerseIndexFromTimelineTime(t) {
+  if (shouldShowCustomBismillah() && t < getCustomBismillahDuration()) return 0;
+  const rowIndex = getCustomIndexFromTime(customTimelineTimeToAudioTime(t));
+  return rowIndex >= 0 ? getCustomVerseIndexForRowIndex(rowIndex) : -1;
+}
+
 function setCustomStateForTime(t) {
-  const idx = getCustomIndexFromTime(t);
-  S.customPlaybackTime = Math.max(0, t);
-  S.currentAya = idx;
-  S.elapsed = idx >= 0 ? Math.max(0, t - S.customTimings[idx].start) : Math.max(0, t);
+  const timelineTime = Math.max(0, t);
+  const verseIndex = getCustomVerseIndexFromTimelineTime(timelineTime);
+  S.customPlaybackTime = timelineTime;
+  S.currentAya = verseIndex;
+  if (verseIndex >= 0 && isBismillahSegment(S.verses[verseIndex])) {
+    S.elapsed = Math.max(0, timelineTime);
+    return;
+  }
+  const row = verseIndex >= 0 ? getCustomTimingForVerseIndex(verseIndex) : null;
+  const audioTime = customTimelineTimeToAudioTime(timelineTime);
+  S.elapsed = row ? Math.max(0, audioTime - row.start) : audioTime;
 }
 
 function seekCustomToTime(t) {
@@ -240,17 +319,28 @@ function seekCustomToTime(t) {
   const nextTime = clampTime(t, total);
   setCustomStateForTime(nextTime);
   if (S.recAudioEl) {
-    try { S.recAudioEl.currentTime = nextTime; } catch (_) {}
+    try { S.recAudioEl.currentTime = customTimelineTimeToAudioTime(nextTime); } catch (_) {}
   }
   updateAyaUI();
   updateProgressUI();
+  if (S.playing) playCustomRecitationAudio();
 }
 
 function seekCustomToIndex(i) {
-  const rows = S.customTimings || [];
-  if (!rows.length) return;
-  const idx = Math.max(0, Math.min(rows.length - 1, i));
-  seekCustomToTime(rows[idx].start);
+  if (!S.verses.length) return;
+  const idx = Math.max(0, Math.min(S.verses.length - 1, i));
+  const aya = S.verses[idx];
+  if (isBismillahSegment(aya)) {
+    seekCustomToTime(0);
+    return;
+  }
+  const row = getCustomTimingForVerseIndex(idx);
+  seekCustomToTime(customAudioTimeToTimelineTime(row?.start || 0));
+}
+
+function getCustomPreviewTimelineTime() {
+  if (S.recAudioEl) return customAudioTimeToTimelineTime(S.recAudioEl.currentTime || 0);
+  return S.customPlaybackTime || 0;
 }
 
 function escapeHtml(s) {
@@ -270,7 +360,10 @@ function updateCustomRecitationStatus() {
     ? `✅ ${S.customRecitationAudioName || S.customRecitationFile.name} — ${fmt(S.customRecitationDuration || 0)}`
     : "⚠️ لم يتم اختيار ملف صوتي بعد";
   const timingPart = S.customTimings?.length ? ` | ${S.customTimings.length} توقيت` : " | حمّل الآيات لإنشاء الجدول";
-  status.textContent = audioPart + timingPart;
+  const bismillahPart = shouldShowCustomBismillah()
+    ? ` | البسملة: ${getCustomBismillahMode() === "reciter-audio" ? "صوت القارئ" : fmt(getCustomBismillahTextDuration())}`
+    : "";
+  status.textContent = audioPart + timingPart + bismillahPart;
 }
 
 function renderCustomTimingTable() {
@@ -323,6 +416,11 @@ function renderCustomRecitationUI() {
   if (controls) controls.style.display = enabled ? "block" : "none";
   const mode = $("custom-timing-mode");
   if (mode && S.customTimingMode) mode.value = S.customTimingMode;
+  const bismillahMode = $("custom-bismillah-mode");
+  const selectedBismillahMode = getCustomBismillahMode();
+  if (bismillahMode) bismillahMode.value = selectedBismillahMode;
+  const bismillahDurationRow = $("custom-bismillah-duration-row");
+  if (bismillahDurationRow) bismillahDurationRow.style.display = enabled && selectedBismillahMode === "text" ? "block" : "none";
   renderCustomTimingTable();
   updateCustomRecitationStatus();
 }
@@ -365,6 +463,25 @@ async function loadCustomRecitationBuffer(ctx) {
   const buf = await ctx.decodeAudioData(ab.slice(0));
   S.customRecitationDuration = buf.duration || S.customRecitationDuration;
   return buf;
+}
+
+async function loadCustomBismillahBuffer(ctx, warn = false) {
+  if (!shouldShowCustomBismillah() || getCustomBismillahMode() !== "reciter-audio") return null;
+  const reciter = S.reciters.find(r => r.id === radioVal("reciter")) || S.reciters[0];
+  const url = buildAudioUrl(reciter.folder, 1, 1);
+  try {
+    const res = await fetch(url, { cache: "force-cache" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const ab = await res.arrayBuffer();
+    const buf = await ctx.decodeAudioData(ab.slice(0));
+    S.customBismillahDuration = buf.duration || getCustomBismillahTextDuration();
+    return buf;
+  } catch (err) {
+    S.customBismillahDuration = BISMILLAH_FALLBACK_DUR;
+    if (warn) toast("⚠️ تعذر تحميل صوت البسملة — سيتم عرضها كنص فقط", "info", 4200);
+    console.warn("Custom Bismillah reciter audio failed:", err);
+    return null;
+  }
 }
 
 function stopCustomPreviewAudio() {
@@ -436,6 +553,7 @@ const S = {
   recAudioEl: null, recAudioSource: null, recGainNode: null, recExportGain: null,
   customRecitationFile: null, customRecitationUrl: null, customRecitationDuration: 0,
   customRecitationAudioName: "", customTimingMode: "equal", customTimings: [], customPreviewAudio: null,
+  customBismillahDuration: BISMILLAH_FALLBACK_DUR,
   customPlaybackTime: 0,
   logoVid: null,
   bgAudioEl: null, bgAudioSource: null, bgPreviewGain: null,
@@ -566,6 +684,25 @@ function initEventListeners() {
   if (customTimingMode) customTimingMode.addEventListener("change", e => {
     S.customTimingMode = e.target.value || "equal";
     persistCustomTimings();
+    renderCustomRecitationUI();
+  });
+
+  const customBismillahMode = $("custom-bismillah-mode");
+  if (customBismillahMode) customBismillahMode.addEventListener("change", () => {
+    if (S.playing) pausePlayer();
+    S.customBismillahDuration = getCustomBismillahMode() === "reciter-audio"
+      ? BISMILLAH_FALLBACK_DUR
+      : getCustomBismillahTextDuration();
+    if (S.verses.length) loadVerses();
+    renderCustomRecitationUI();
+  });
+
+  const customBismillahTextDuration = $("custom-bismillah-text-duration");
+  if (customBismillahTextDuration) customBismillahTextDuration.addEventListener("input", () => {
+    S.customBismillahDuration = getCustomBismillahTextDuration();
+    setCustomStateForTime(S.customPlaybackTime || 0);
+    updateProgressUI();
+    updateAyaUI();
     renderCustomRecitationUI();
   });
 
@@ -959,12 +1096,14 @@ function getEffectiveDur(i) {
 function checkAyaAdvance() {
   if (S.exporting) return;
   if (isCustomRecitationEnabled()) {
-    const t = S.recAudioEl ? S.recAudioEl.currentTime : S.elapsed;
+    const timelineTime = S.recAudioEl
+      ? getCustomPreviewTimelineTime()
+      : ((S.currentAya >= 0 && isBismillahSegment(S.verses[S.currentAya])) ? S.elapsed : S.customPlaybackTime);
     const oldAya = S.currentAya;
-    setCustomStateForTime(t);
+    setCustomStateForTime(timelineTime);
     if (oldAya !== S.currentAya) updateAyaUI();
     const total = getSequenceDuration();
-    if (total && t >= total - 0.02) {
+    if (total && S.customPlaybackTime >= total - 0.02) {
       pausePlayer();
       seekCustomToTime(0);
     }
@@ -2477,34 +2616,70 @@ async function playCustomRecitationAudio() {
   try {
     const ctx = await resumeAudioCtx();
     if (myGen !== _recGen) return;
-    const a = new Audio(S.customRecitationUrl);
-    a.preload = "auto";
-    a.volume = gv("rec-vol") / 100;
-    const startAt = clampTime(S.customPlaybackTime || 0, getSequenceDuration() || S.customRecitationDuration || Infinity);
-    try { a.currentTime = startAt; } catch (_) {}
-    a.onloadedmetadata = () => { try { a.currentTime = startAt; } catch (_) {} };
-    a.onended = () => {
-      if (myGen !== _recGen) return;
-      pausePlayer();
-      seekCustomToTime(0);
+    const bismillahBuf = await loadCustomBismillahBuffer(ctx, true);
+    if (myGen !== _recGen) return;
+    const startTimeline = clampTime(S.customPlaybackTime || 0, getSequenceDuration() || S.customRecitationDuration || Infinity);
+    setCustomStateForTime(startTimeline);
+
+    const startCustomAudio = async (audioStart) => {
+      if (!S.playing || myGen !== _recGen) return;
+      const a = new Audio(S.customRecitationUrl);
+      a.preload = "auto";
+      a.volume = gv("rec-vol") / 100;
+      const startAt = clampTime(audioStart, S.customRecitationDuration || Infinity);
+      try { a.currentTime = startAt; } catch (_) {}
+      a.onloadedmetadata = () => { try { a.currentTime = startAt; } catch (_) {} };
+      a.onended = () => {
+        if (myGen !== _recGen) return;
+        pausePlayer();
+        seekCustomToTime(0);
+      };
+      a.onerror = () => {
+        if (myGen !== _recGen) return;
+        toast("❌ تعذر تشغيل ملف التلاوة المخصص", "error");
+        pausePlayer();
+      };
+      try {
+        const source = ctx.createMediaElementSource(a);
+        const gainNode = ctx.createGain();
+        gainNode.gain.value = gv("rec-vol") / 100;
+        source.connect(gainNode);
+        gainNode.connect(ctx.destination);
+        gainNode.connect(S.analyser);
+        S.recAudioSource = source;
+        S.recGainNode = gainNode;
+      } catch (_) {}
+      S.recAudioEl = a;
+      $("audio-status").textContent = `▶️ تلاوة مخصصة — ${S.customRecitationAudioName || "ملف صوتي"}`;
+      await a.play();
     };
-    a.onerror = () => {
-      if (myGen !== _recGen) return;
-      toast("❌ تعذر تشغيل ملف التلاوة المخصص", "error");
-      pausePlayer();
-    };
-    try {
-      const source = ctx.createMediaElementSource(a);
-      const gainNode = ctx.createGain();
-      gainNode.gain.value = gv("rec-vol") / 100;
-      source.connect(gainNode);
-      gainNode.connect(ctx.destination);
-      gainNode.connect(S.analyser);
-      S.recAudioSource = source;
-      S.recGainNode = gainNode;
-    } catch (_) {}
-    S.recAudioEl = a;
-    await a.play();
+
+    const mode = getCustomBismillahMode();
+    const offset = getCustomTimelineOffset();
+    if (shouldShowCustomBismillah() && mode === "reciter-audio" && startTimeline < offset) {
+      $("audio-status").textContent = "▶️ البسملة — صوت القارئ المحدد";
+      const remaining = Math.max(0, offset - startTimeline);
+      if (bismillahBuf) {
+        const gainNode = ctx.createGain();
+        gainNode.gain.value = gv("rec-vol") / 100;
+        const source = ctx.createBufferSource();
+        source.buffer = bismillahBuf;
+        source.connect(gainNode);
+        gainNode.connect(ctx.destination);
+        gainNode.connect(S.analyser);
+        source.onended = () => startCustomAudio(0);
+        source.start(0, Math.min(startTimeline, Math.max(0, bismillahBuf.duration - 0.01)));
+        S.recAudioSource = source;
+        S.recGainNode = gainNode;
+      } else {
+        setTimeout(() => {
+          if (S.playing && myGen === _recGen) startCustomAudio(0);
+        }, remaining * 1000);
+      }
+      return;
+    }
+
+    await startCustomAudio(customTimelineTimeToAudioTime(startTimeline));
   } catch (err) {
     console.warn("Custom recitation playback failed:", err);
     toast("❌ تعذر تشغيل ملف التلاوة المخصص", "error");
@@ -3159,7 +3334,7 @@ function startPlayer() {
 function pausePlayer() {
   S.playing = false;
   $("btn-play").textContent = "▶️";
-  if (isCustomRecitationEnabled() && S.recAudioEl) setCustomStateForTime(S.recAudioEl.currentTime);
+  if (isCustomRecitationEnabled() && S.recAudioEl) setCustomStateForTime(getCustomPreviewTimelineTime());
   stopRecitationAudio();
   if (S.bgAudioEl) S.bgAudioEl.pause();
   // إعادة فيديو الخلفية للبداية تحضيراً للتصدير
@@ -3205,7 +3380,7 @@ function seekClick(e) {
 function updateProgressUI() {
   const totalDur = getSequenceDuration() || 1;
   if (isCustomRecitationEnabled()) {
-    const passed = clampTime(S.recAudioEl ? S.recAudioEl.currentTime : S.customPlaybackTime, totalDur);
+    const passed = clampTime(getCustomPreviewTimelineTime(), totalDur);
     const pct = Math.min(100, (passed / totalDur) * 100);
     $("pfill").style.width = pct + "%";
     $("ptime").textContent = `${fmt(passed)} / ${fmt(totalDur)}`;
@@ -3309,11 +3484,17 @@ async function startExport(type) {
   if (customMode) {
     try {
       $("rec-sub").textContent = "⏳ فك ترميز التلاوة المخصصة…";
+      const bismillahBuf = await loadCustomBismillahBuffer(ctx, true);
       const buf = await loadCustomRecitationBuffer(ctx);
-      audioBuffers = [buf];
-      ayaStarts = [0];
+      if (shouldShowCustomBismillah() && getCustomBismillahMode() === "reciter-audio") {
+        audioBuffers = [bismillahBuf, buf];
+        ayaStarts = [0, getCustomTimelineOffset()];
+      } else {
+        audioBuffers = [buf];
+        ayaStarts = [0];
+      }
       totalDuration = getSequenceDuration() || buf.duration;
-      getAyaAt = (t) => getCustomIndexFromTime(t);
+      getAyaAt = (t) => getCustomVerseIndexFromTimelineTime(t);
     } catch (err) {
       console.warn("Custom export decode failed:", err);
       S.exporting = false;
@@ -3507,11 +3688,12 @@ async function startExport(type) {
     if (targetFrame > lastDrawnFrame) {
       const t = targetFrame / FPS;
       const ci = getAyaAt(Math.min(t, totalDuration - 0.001));
-      S.currentAya = ci;
-      S.elapsed = customMode
-        ? (ci >= 0 ? Math.max(0, t - S.customTimings[ci].start) : t)
-        : Math.max(0, t - ayaStarts[ci]);
-      if (customMode) S.customPlaybackTime = t;
+      if (customMode) {
+        setCustomStateForTime(t);
+      } else {
+        S.currentAya = ci;
+        S.elapsed = Math.max(0, t - ayaStarts[ci]);
+      }
       drawFrame(t);
       lastDrawnFrame = targetFrame;
 
@@ -3960,11 +4142,15 @@ async function loadVerses() {
   S.elapsed = 0;
   S.customPlaybackTime = 0;
   S.ayaDurations = addBismillah ? [BISMILLAH_FALLBACK_DUR] : [];
+  if (isCustomRecitationEnabled() && getCustomBismillahMode() !== "reciter-audio") {
+    S.customBismillahDuration = getCustomBismillahTextDuration();
+  }
   if (isCustomRecitationEnabled()) {
     syncCustomTimingsToVerses(true);
     setCustomStateForTime(0);
   }
-  const bismillahNote = ge("bismillah-intro") && surahNum === 9
+  const wantsBismillah = isCustomRecitationEnabled() ? getCustomBismillahMode() !== "none" : ge("bismillah-intro");
+  const bismillahNote = wantsBismillah && surahNum === 9
     ? " — تُخطيت البسملة لسورة التوبة"
     : (addBismillah ? " + البسملة" : "");
   $("aya-info").textContent = `✅ ${verses.length} آية من سورة ${surah?.name || ""} ${source}${bismillahNote}`;
@@ -4214,6 +4400,8 @@ function captureState() {
     bismillahIntro: ge("bismillah-intro"),
     customRecitationEnabled: ge("custom-recitation-enabled"),
     customTimingMode: gv("custom-timing-mode") || "equal",
+    customBismillahMode: getCustomBismillahMode(),
+    customBismillahTextDuration: getCustomBismillahTextDuration(),
     customTimings: S.customTimings || [],
     gc1: $("gc1").value, gc2: $("gc2").value,
     font: radioVal("font"), txtCol: $("txt-col").value,
@@ -4229,6 +4417,8 @@ function applyState(st) {
   if ($("bismillah-intro") && typeof st.bismillahIntro === "boolean") $("bismillah-intro").checked = st.bismillahIntro;
   if ($("custom-recitation-enabled") && typeof st.customRecitationEnabled === "boolean") $("custom-recitation-enabled").checked = st.customRecitationEnabled;
   if ($("custom-timing-mode")) $("custom-timing-mode").value = st.customTimingMode || "equal";
+  if ($("custom-bismillah-mode")) $("custom-bismillah-mode").value = st.customBismillahMode || "none";
+  if ($("custom-bismillah-text-duration")) $("custom-bismillah-text-duration").value = st.customBismillahTextDuration || BISMILLAH_FALLBACK_DUR;
   if (Array.isArray(st.customTimings)) S.customTimings = st.customTimings;
   setCol("gc1", st.gc1); setCol("gc2", st.gc2);
   if ($("gc1t")) $("gc1t").value = st.gc1 || ""; if ($("gc2t")) $("gc2t").value = st.gc2 || "";
@@ -4998,9 +5188,15 @@ async function startExportDesktop(codecKey) {
   if (customMode) {
     try {
       $("rec-sub").textContent = "⏳ فك ترميز التلاوة المخصصة…";
+      const bismillahBuf = await loadCustomBismillahBuffer(ctx, true);
       const buf = await loadCustomRecitationBuffer(ctx);
-      audioBuffers = [buf];
-      ayaStarts = [0];
+      if (shouldShowCustomBismillah() && getCustomBismillahMode() === "reciter-audio") {
+        audioBuffers = [bismillahBuf, buf];
+        ayaStarts = [0, getCustomTimelineOffset()];
+      } else {
+        audioBuffers = [buf];
+        ayaStarts = [0];
+      }
       totalDuration = getSequenceDuration() || buf.duration;
     } catch (err) {
       console.warn("Custom desktop export decode failed:", err);
@@ -5073,7 +5269,7 @@ async function startExportDesktop(codecKey) {
 
   // ── دالة استنتاج الآية الحالية من الزمن (تشمل فاصل الصمت) ──
   const getAyaAt = (t) => {
-    if (customMode) return getCustomIndexFromTime(t);
+    if (customMode) return getCustomVerseIndexFromTimelineTime(t);
     for (let i = 0; i < S.verses.length; i++) {
       if (t < ayaStarts[i] + getDur(i) + getSegmentGap(i)) return i;
     }
@@ -5086,9 +5282,7 @@ async function startExportDesktop(codecKey) {
   const setStateForTime = (t) => {
     const idx = getAyaAt(Math.min(t, totalDuration - 1e-4));
     if (customMode) {
-      S.currentAya = idx;
-      S.elapsed    = idx >= 0 ? Math.max(0, t - S.customTimings[idx].start) : t;
-      S.customPlaybackTime = t;
+      setCustomStateForTime(t);
       S.bgMotionT  = t;
       return;
     }
