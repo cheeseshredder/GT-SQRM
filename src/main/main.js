@@ -38,13 +38,19 @@ function cacheBinary(name, resolvedPath) {
   return resolvedPath;
 }
 
+function addBinaryCandidates(candidates, base, name) {
+  if (!base) return;
+  for (const binaryName of getBinaryNames(name)) {
+    candidates.push(path.join(base, binaryName));
+    candidates.push(path.join(base, "bin", binaryName));
+  }
+}
+
 function getExtraBinCandidates(name) {
   const candidates = [];
 
   for (const base of EXTRA_PATHS) {
-    for (const binaryName of getBinaryNames(name)) {
-      candidates.push(path.join(base, binaryName));
-    }
+    addBinaryCandidates(candidates, base, name);
   }
 
   if (isWindows) {
@@ -59,15 +65,22 @@ function getExtraBinCandidates(name) {
     try {
       for (const entry of fs.readdirSync(wingetPackages, { withFileTypes: true })) {
         if (entry.isDirectory() && entry.name.toLowerCase().includes(name.toLowerCase())) {
-          windowsBases.push(path.join(wingetPackages, entry.name));
+          const packageRoot = path.join(wingetPackages, entry.name);
+          windowsBases.push(packageRoot);
+
+          try {
+            for (const child of fs.readdirSync(packageRoot, { withFileTypes: true })) {
+              if (child.isDirectory()) {
+                windowsBases.push(path.join(packageRoot, child.name));
+              }
+            }
+          } catch (_) {}
         }
       }
     } catch (_) {}
 
     for (const base of windowsBases) {
-      for (const binaryName of getBinaryNames(name)) {
-        candidates.push(path.join(base, binaryName));
-      }
+      addBinaryCandidates(candidates, base, name);
     }
   }
 
@@ -98,14 +111,15 @@ function getPackagedBinCandidates(name) {
 
   const roots = [
     path.dirname(app.getPath("exe")),
-    process.resourcesPath
+    process.resourcesPath,
+    process.resourcesPath && path.dirname(process.resourcesPath),
+    process.resourcesPath && path.join(process.resourcesPath, "app"),
+    process.resourcesPath && path.join(process.resourcesPath, "app.asar.unpacked")
   ].filter(Boolean);
 
   const candidates = [];
   for (const root of [...new Set(roots)]) {
-    for (const binaryName of getBinaryNames(name)) {
-      candidates.push(path.join(root, "bin", binaryName));
-    }
+    addBinaryCandidates(candidates, path.join(root, "bin"), name);
   }
   return candidates;
 }
@@ -253,16 +267,23 @@ ipcMain.handle("check-deps", async () => {
     results["ffmpeg"] = { ok: false, version: null };
   } else {
     try {
-      // ffmpeg يكتب مخرجاته في stderr
-      const { stdout, stderr } = await execPromise(
-        `"${ffmpegPath}" -version`,
-        { timeout: 5000 }
+      // ffmpeg may be slow on first launch on Windows while antivirus scans it.
+      const { stdout, stderr } = await execFilePromise(
+        ffmpegPath,
+        ["-version"],
+        { timeout: 20000, windowsHide: true }
       ).catch(err => ({ stdout: err.stdout || "", stderr: err.stderr || "" }));
       const combined = (stdout + " " + stderr).trim();
       const ver = combined.split("\n")[0].trim();
-      results["ffmpeg"] = { ok: !!ver, version: ver };
+      results["ffmpeg"] = {
+        ok: !!ver || fs.existsSync(ffmpegPath),
+        version: ver || "installed"
+      };
     } catch (_) {
-      results["ffmpeg"] = { ok: false, version: null };
+      results["ffmpeg"] = {
+        ok: fs.existsSync(ffmpegPath),
+        version: fs.existsSync(ffmpegPath) ? "installed" : null
+      };
     }
   }
 
