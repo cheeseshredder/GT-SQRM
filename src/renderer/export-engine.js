@@ -285,6 +285,7 @@ async function startDesktopExportV2(opts) {
     bgVideoBytesList,    // Array<ArrayBuffer> لـ playlist (يضمّ في ffmpeg)
     bgClipDurations,     // مدد المقاطع (للـ xfade)
     bgCrossfadeSec,      // مدة الـ crossfade بالثواني
+    bgLoopMode,
     bgSingleLoopCrossfade,
     bgVidTrim,           // {start,end} لتقطيع فيديو الخلفية (اختياري)
     bgAudioTrim,         // {start,end} لتقطيع صوت الخلفية (اختياري)
@@ -362,6 +363,7 @@ async function startDesktopExportV2(opts) {
           videoBytesList: hasMulti ? bgVideoBytesList : null,
           clipDurations:  (hasMulti || bgSingleLoopCrossfade) ? bgClipDurations : null,
           crossfadeSec:   (hasMulti || bgSingleLoopCrossfade) ? bgCrossfadeSec  : 0,
+          loopStyle:      bgLoopMode || "crossfade",
           singleLoopCrossfade: !!bgSingleLoopCrossfade,
           fps: FPS,
           width:  W,

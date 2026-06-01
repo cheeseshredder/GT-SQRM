@@ -459,7 +459,7 @@ ipcMain.on("ffmpeg-pipe-cancel", () => {
 // ── استخراج إطارات فيديو الخلفية مسبقاً (مرة واحدة) ───
 //    أسرع وأكثر استقراراً من seek على HTMLVideoElement
 ipcMain.handle("extract-bg-frames", async (event, opts) => {
-  const { videoBytes, videoBytesList, clipDurations, crossfadeSec, singleLoopCrossfade, fps, width, height, totalDuration, trimStart, trimEnd } = opts;
+  const { videoBytes, videoBytesList, clipDurations, crossfadeSec, loopStyle, singleLoopCrossfade, fps, width, height, totalDuration, trimStart, trimEnd } = opts;
   const ffmpegPath = await getBinPath("ffmpeg");
   if (!ffmpegPath) throw new Error("ffmpeg not found");
 
@@ -557,22 +557,44 @@ ipcMain.handle("extract-bg-frames", async (event, opts) => {
       const trimFilter = (typeof trimStart === "number" && typeof trimEnd === "number" && trimEnd > trimStart)
         ? `trim=start=${trimStart}:end=${trimEnd},`
         : "";
-      const filterInputs = Array.from({ length: copies }, (_, i) =>
-        `[${i}:v:0]${trimFilter}setpts=PTS-STARTPTS,scale=${W12}:${H12}:force_original_aspect_ratio=increase,crop=${W12}:${H12},setsar=1,fps=${fps},format=yuv420p[v${i}]`
-      ).join(";");
+      let filterComplex;
+      if (loopStyle === "stacked") {
+        const outDur = Math.min(totalDuration + 1, clipDur + (copies - 1) * step);
+        const base = `color=c=black@0.0:s=${W12}x${H12}:d=${outDur.toFixed(3)}:r=${fps},format=rgba[base]`;
+        const filterInputs = Array.from({ length: copies }, (_, i) => {
+          const offset = i * step;
+          const alphaFade = i === 0 ? "" : `fade=t=in:st=0:d=${xf}:alpha=1,`;
+          const pts = i === 0 ? "" : `setpts=PTS+${offset.toFixed(3)}/TB,`;
+          return `[${i}:v:0]${trimFilter}setpts=PTS-STARTPTS,scale=${W12}:${H12}:force_original_aspect_ratio=increase,crop=${W12}:${H12},setsar=1,fps=${fps},format=rgba,${alphaFade}${pts}[v${i}]`;
+        }).join(";");
 
-      const segs = [];
-      let prev = "v0";
-      let offset = 0;
-      for (let i = 1; i < copies; i++) {
-        offset += step;
-        const out = (i === copies - 1) ? "outv" : `xl${i}`;
-        segs.push(`[${prev}][v${i}]xfade=transition=fade:duration=${xf}:offset=${offset.toFixed(3)}[${out}]`);
-        prev = out;
+        const overlays = [];
+        let prev = "base";
+        for (let i = 0; i < copies; i++) {
+          const out = i === copies - 1 ? "stackedv" : `ov${i}`;
+          overlays.push(`[${prev}][v${i}]overlay=eof_action=pass:shortest=0[${out}]`);
+          prev = out;
+        }
+        filterComplex = `${base};${filterInputs};${overlays.join(";")};[stackedv]format=yuv420p[outv]`;
+      } else {
+        const filterInputs = Array.from({ length: copies }, (_, i) =>
+          `[${i}:v:0]${trimFilter}setpts=PTS-STARTPTS,scale=${W12}:${H12}:force_original_aspect_ratio=increase,crop=${W12}:${H12},setsar=1,fps=${fps},format=yuv420p[v${i}]`
+        ).join(";");
+
+        const segs = [];
+        let prev = "v0";
+        let offset = 0;
+        for (let i = 1; i < copies; i++) {
+          offset += step;
+          const out = (i === copies - 1) ? "outv" : `xl${i}`;
+          segs.push(`[${prev}][v${i}]xfade=transition=fade:duration=${xf}:offset=${offset.toFixed(3)}[${out}]`);
+          prev = out;
+        }
+        filterComplex = `${filterInputs};${segs.join(";")}`;
       }
 
       loopArgs.push(
-        "-filter_complex", `${filterInputs};${segs.join(";")}`,
+        "-filter_complex", filterComplex,
         "-map", "[outv]",
         "-t", String(Math.min(totalDuration + 1, clipDur + (copies - 1) * step)),
         "-an",

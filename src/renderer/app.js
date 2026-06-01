@@ -2865,6 +2865,8 @@ function updateBgVidInfo() {
     el.textContent = `🪄 قص ذكي للحلقة: ${fmt(trim.start)} → ${fmt(trim.end)} من أصل ${fmt(dur)}`;
   } else if (trim) {
     el.textContent = `✂️ تقطيع يدوي: ${fmt(trim.start)} → ${fmt(trim.end)} من أصل ${fmt(dur)}`;
+  } else if (getBgLoopMode() === "stacked" && S.bgVidItems.length === 1) {
+    el.textContent = `حلقة مركّبة عند التصدير من مقطع مدته ${fmt(dur)}`;
   } else {
     el.textContent = `مدة المقطع: ${fmt(dur)}`;
   }
@@ -3094,7 +3096,8 @@ function getBgLoopMode() {
   return el ? el.value : "crossfade";
 }
 function shouldUseSingleBgCrossfade() {
-  return getBgLoopMode() === "crossfade" && getCrossfadeDur() > 0 && S.bgVidItems.length === 1;
+  const mode = getBgLoopMode();
+  return (mode === "crossfade" || mode === "stacked") && getCrossfadeDur() > 0 && S.bgVidItems.length === 1;
 }
 function getBgVidLoopBounds(vid = S.bgVid) {
   const trim = (typeof getBgVidTrim === "function") ? getBgVidTrim(vid) : null;
@@ -5558,6 +5561,7 @@ async function startExportDesktop(codecKey) {
   let bgVideoBytes = null;
   let bgVideoBytesList = null;
   let bgClipDurations = null;
+  const bgLoopMode = getBgLoopMode();
   const bgSingleLoopCrossfade = S.bgVidItems && S.bgVidItems.length === 1 && shouldUseSingleBgCrossfade();
   if (S.bgVidItems && S.bgVidItems.length > 1) {
     try {
@@ -5613,7 +5617,8 @@ async function startExportDesktop(codecKey) {
       bgVideoBytes,
       bgVideoBytesList,
       bgClipDurations,      // مدّة كل مقطع — لازم للـ crossfade xfade
-      bgCrossfadeSec: bgSingleLoopCrossfade ? getEffectiveBgCrossfadeDur() : (getBgLoopMode() === "crossfade" ? getCrossfadeDur() : 0),  // نفس مدة المعاينة بالضبط
+      bgCrossfadeSec: bgSingleLoopCrossfade ? getEffectiveBgCrossfadeDur() : (bgLoopMode === "crossfade" ? getCrossfadeDur() : 0),  // نفس مدة المعاينة بالضبط
+      bgLoopMode,
       bgSingleLoopCrossfade,
       bgVidTrim,
       bgAudioTrim,
